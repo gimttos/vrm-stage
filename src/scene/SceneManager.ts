@@ -1,6 +1,9 @@
 import { withBase } from '../basePath';
 import {
+  SCENE_VERSION,
   emptyScene,
+  fullFrameAvatar,
+  type AvatarItem,
   type ImageItem,
   type SceneBackground,
   type SceneItem,
@@ -25,7 +28,20 @@ const DESIGN_HEIGHT = 1080;
  */
 export class SceneManager {
   private spec: SceneSpec = emptyScene();
-  private readonly layer: HTMLElement;
+  /**
+   * DOM bands around the WebGL canvas:
+   *
+   *   #scene-back    background fill + items behind the avatar
+   *   canvas         the avatar, inside its own viewport rect
+   *   #scene-front   items in front of the avatar
+   *   #scene-edit    drag grips only; never built in live mode
+   *
+   * Editing handles live in their own band rather than on the rendered element.
+   * The avatar has no DOM node to grab at all — it is pixels in a shared canvas —
+   * and a future media embed would swallow pointer events entirely, so the grip
+   * has to be a sibling either way.
+   */
+  private readonly bands: { back: HTMLElement; front: HTMLElement; edit: HTMLElement | null };
   private readonly elements = new Map<string, HTMLElement>();
   private selectedId: string | null = null;
 
@@ -38,19 +54,42 @@ export class SceneManager {
     private readonly stageEl: HTMLElement,
     private readonly editable: boolean,
   ) {
-    this.layer = document.createElement('div');
-    this.layer.id = 'scene-layer';
-    this.layer.classList.toggle('editable', editable);
-    stageEl.appendChild(this.layer);
+    const back = document.createElement('div');
+    back.id = 'scene-back';
+    // insertBefore rather than relying on the canvas already being first: this
+    // stays correct if construction order ever changes.
+    stageEl.insertBefore(back, stageEl.firstChild);
 
+    const front = document.createElement('div');
+    front.id = 'scene-front';
+    stageEl.appendChild(front);
+
+    // Gates `pointer-events` in CSS: in live output nothing is grabbable, so the
+    // composited frame behaves like the flat image it is meant to be.
+    if (editable) for (const band of [back, front]) band.classList.add('editable');
+
+    let edit: HTMLElement | null = null;
     if (editable) {
-      // The layer is input-transparent (camera panning lives on the canvas), so
-      // "click empty space to deselect" listens on the stage instead.
+      edit = document.createElement('div');
+      edit.id = 'scene-edit';
+      stageEl.appendChild(edit);
+
+      // Last responder. Items handle their own clicks and stop propagation, so
+      // anything arriving here missed every overlay: it is either a camera
+      // gesture, a grab of the avatar (hit-tested by rect, since the avatar has
+      // no DOM node of its own), or a click on nothing.
       stageEl.addEventListener('pointerdown', (event) => {
-        const target = event.target as HTMLElement | null;
-        if (!target?.closest('.scene-text, .scene-image')) this.select(null);
+        if (event.ctrlKey || event.metaKey) return;
+        const avatar = this.avatarItem;
+        if (avatar && avatar.hidden !== true && this.hitsAvatar(event, avatar)) {
+          this.beginDrag(event, avatar.id);
+        } else {
+          this.select(null);
+        }
       });
     }
+
+    this.bands = { back, front, edit };
 
     // Text sizes are authored against a 1080p-tall stage; rescale on resize so
     // the OBS render and the editor agree about proportions.
@@ -89,7 +128,7 @@ export class SceneManager {
   }
 
   serialize(): string {
-    return toBase64Url(JSON.stringify(this.spec));
+    return toBase64Url(JSON.stringify(compact(this.spec)));
   }
 
   static parseEncoded(encoded: string): SceneSpec | null {
@@ -101,7 +140,7 @@ export class SceneManager {
   }
 
   exportJson(): string {
-    return JSON.stringify(this.spec, null, 2);
+    return JSON.stringify(compact(this.spec), null, 2);
   }
 
   importJson(json: string): boolean {
@@ -116,8 +155,17 @@ export class SceneManager {
     }
   }
 
+  /** Empty means "nothing to share" — the avatar row alone does not count. */
   get isEmpty(): boolean {
-    return this.spec.items.length === 0 && this.spec.background.type === 'none';
+    return (
+      this.spec.items.every((item) => item.kind === 'avatar') &&
+      this.spec.background.type === 'none'
+    );
+  }
+
+  /** The single avatar row, which every sanitized scene has. */
+  get avatarItem(): AvatarItem | null {
+    return (this.spec.items.find((item) => item.kind === 'avatar') as AvatarItem) ?? null;
   }
 
   // ------------------------------------------------------------- editing
@@ -135,6 +183,7 @@ export class SceneManager {
       text: '텍스트',
       x: 50,
       y: 20,
+      band: 'front',
       size: 48,
       color: '#ffffff',
       bold: true,
@@ -148,7 +197,15 @@ export class SceneManager {
   }
 
   addImage(url: string): ImageItem {
-    const item: ImageItem = { id: newId(), kind: 'image', url, x: 78, y: 75, width: 22 };
+    const item: ImageItem = {
+      id: newId(),
+      kind: 'image',
+      url,
+      x: 78,
+      y: 75,
+      width: 22,
+      band: 'front',
+    };
     this.spec.items.push(item);
     this.renderItem(item);
     this.select(item.id);
@@ -156,12 +213,25 @@ export class SceneManager {
     return item;
   }
 
-  updateItem(id: string, patch: Partial<Omit<TextItem, 'kind'> & Omit<ImageItem, 'kind'>>): void {
+  updateItem(
+    id: string,
+    patch: Partial<Omit<TextItem, 'kind'> & Omit<ImageItem, 'kind'> & Omit<AvatarItem, 'kind'>>,
+  ): void {
     const item = this.spec.items.find((entry) => entry.id === id);
     if (!item) return;
+
+    const movedBand = 'band' in patch && patch.band !== (item as { band?: string }).band;
     Object.assign(item, patch);
-    const el = this.elements.get(id);
-    if (el) this.styleItem(el, item);
+
+    // Moving between bands means moving the node, and reordering means redoing
+    // the sequence. At 60 items a full re-render is free and keeps "later item
+    // on top" honest without bookkeeping.
+    if (movedBand) {
+      this.renderAll();
+    } else {
+      const el = this.elements.get(id);
+      if (el) this.styleItem(el, item);
+    }
     this.emit();
   }
 
@@ -173,8 +243,12 @@ export class SceneManager {
     this.emit();
   }
 
+  /** Clears overlays and background but keeps the avatar — it is not decoration. */
   clear(): void {
-    this.load(emptyScene());
+    const avatar = this.avatarItem;
+    const next = emptyScene();
+    if (avatar) next.items = [avatar];
+    this.load(next);
     this.emit();
   }
 
@@ -189,32 +263,79 @@ export class SceneManager {
   // ------------------------------------------------------------- rendering
 
   private renderAll(): void {
-    this.layer.innerHTML = '';
+    this.bands.back.innerHTML = '';
+    this.bands.front.innerHTML = '';
+    if (this.bands.edit) this.bands.edit.innerHTML = '';
     this.elements.clear();
     this.applyBackground();
     for (const item of this.spec.items) this.renderItem(item);
   }
 
   private renderItem(item: SceneItem): void {
+    // The avatar is pixels in the WebGL canvas, not a DOM node. It still needs to
+    // be selectable and draggable, so it gets a grip in the edit band and nothing
+    // else — the rect itself is handed to Stage by main.ts.
+    if (item.kind === 'avatar') {
+      this.renderAvatarGrip(item);
+      return;
+    }
+
     let el: HTMLElement;
     if (item.kind === 'text') {
       el = document.createElement('div');
-      el.className = 'scene-text';
+      el.className = 'scene-item scene-text';
     } else {
       const img = document.createElement('img');
-      img.className = 'scene-image';
+      img.className = 'scene-item scene-image';
       img.draggable = false;
       el = img;
     }
+    el.hidden = item.hidden === true;
     this.styleItem(el, item);
     this.bindDrag(el, item.id);
-    this.layer.appendChild(el);
+    this.bands[item.band].appendChild(el);
     this.elements.set(item.id, el);
+  }
+
+  /**
+   * The avatar's outline. Purely decorative — `pointer-events: none`.
+   *
+   * The grip is in the topmost band and a full-frame avatar's grip covers the
+   * entire stage, so anything grabbable here would shadow every text and image
+   * in the scene and make a migrated v1 scene uneditable. Instead the avatar is
+   * hit-tested against its rect by the stage-level handler, which runs only
+   * after the real items have declined the click.
+   */
+  private renderAvatarGrip(item: AvatarItem): void {
+    if (!this.bands.edit) return;
+    const grip = document.createElement('div');
+    grip.className = 'scene-grip scene-avatar-grip';
+    grip.hidden = item.hidden === true;
+    this.styleItem(grip, item);
+    this.bands.edit.appendChild(grip);
+    this.elements.set(item.id, grip);
+  }
+
+  /** Is this point inside the avatar's rect? Percentages, so resolution-free. */
+  private hitsAvatar(event: PointerEvent, item: AvatarItem): boolean {
+    const rect = this.stageEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    const px = ((event.clientX - rect.left) / rect.width) * 100;
+    const py = ((event.clientY - rect.top) / rect.height) * 100;
+    return (
+      Math.abs(px - item.x) <= item.w / 2 && Math.abs(py - item.y) <= item.h / 2
+    );
   }
 
   private styleItem(el: HTMLElement, item: SceneItem): void {
     el.style.left = `${item.x}%`;
     el.style.top = `${item.y}%`;
+
+    if (item.kind === 'avatar') {
+      el.style.width = `${item.w}%`;
+      el.style.height = `${item.h}%`;
+      return;
+    }
 
     if (item.kind === 'text') {
       // textContent, never innerHTML: scene JSON arrives from URLs and files.
@@ -239,13 +360,17 @@ export class SceneManager {
 
   private applyBackground(): void {
     const background = this.spec.background;
+    // The BACK band, not the stage element: the background must sit behind the
+    // avatar but in front of nothing, and the stage itself has to stay
+    // transparent for OBS to composite the whole frame.
+    const target = this.bands.back.style;
     if (background.type === 'color') {
-      this.stageEl.style.background = background.color;
+      target.background = background.color;
     } else if (background.type === 'image') {
       // The URL was sanitized on the way in; quotes/backslashes are stripped.
-      this.stageEl.style.background = `center / cover no-repeat url("${background.url}")`;
+      target.background = `center / cover no-repeat url("${background.url}")`;
     } else {
-      this.stageEl.style.background = '';
+      target.background = '';
     }
   }
 
@@ -253,28 +378,45 @@ export class SceneManager {
     if (!this.editable) return;
 
     el.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
+      // Ctrl/Cmd-drag belongs to the camera, which listens on #stage. Bubble
+      // instead of swallowing so panning stays reachable over any item.
+      if (event.ctrlKey || event.metaKey) return;
       event.stopPropagation();
-      this.select(id);
-
-      const rect = this.stageEl.getBoundingClientRect();
-      const item = this.spec.items.find((entry) => entry.id === id);
-      if (!item || rect.width === 0) return;
-
-      const move = (ev: PointerEvent) => {
-        item.x = clampPct(((ev.clientX - rect.left) / rect.width) * 100);
-        item.y = clampPct(((ev.clientY - rect.top) / rect.height) * 100);
-        this.styleItem(el, item);
-      };
-      const up = () => {
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-        // One emit per drag, not per pixel.
-        this.emit();
-      };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
+      this.beginDrag(event, id);
     });
+  }
+
+  /** Selects `id` and moves it with the pointer until release. */
+  private beginDrag(event: PointerEvent, id: string): void {
+    event.preventDefault();
+    this.select(id);
+
+    const rect = this.stageEl.getBoundingClientRect();
+    const item = this.spec.items.find((entry) => entry.id === id);
+    const el = this.elements.get(id);
+    if (!item || !el || rect.width === 0) return;
+
+    // Grab offset, so the item does not jump its centre to the cursor. It also
+    // makes dragging a full-frame avatar a no-op rather than a violent snap.
+    const dx = item.x - ((event.clientX - rect.left) / rect.width) * 100;
+    const dy = item.y - ((event.clientY - rect.top) / rect.height) * 100;
+
+    const move = (ev: PointerEvent) => {
+      item.x = clampPct(((ev.clientX - rect.left) / rect.width) * 100 + dx);
+      item.y = clampPct(((ev.clientY - rect.top) / rect.height) * 100 + dy);
+      this.styleItem(el, item);
+      // The avatar's rect drives the WebGL viewport, so it has to follow the
+      // drag live — the grip alone would slide off the pixels it represents.
+      if (item.kind === 'avatar') this.onChange?.();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      // One persist per drag, not per pixel.
+      this.emit();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
   }
 
   private emit(): void {
@@ -298,9 +440,11 @@ export function sanitizeScene(raw: unknown): SceneSpec | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const input = raw as Record<string, unknown>;
 
+  const version = asNumber(input['version'], 1);
   const background = sanitizeBackground(input['background']);
   const itemsRaw = Array.isArray(input['items']) ? input['items'] : [];
   const items: SceneItem[] = [];
+  let hasAvatar = false;
 
   for (const entry of itemsRaw.slice(0, 60)) {
     if (typeof entry !== 'object' || entry === null) continue;
@@ -309,6 +453,8 @@ export function sanitizeScene(raw: unknown): SceneSpec | null {
       id: typeof it['id'] === 'string' ? it['id'].slice(0, 32) : newId(),
       x: clampPct(asNumber(it['x'], 50)),
       y: clampPct(asNumber(it['y'], 50)),
+      band: it['band'] === 'back' ? ('back' as const) : ('front' as const),
+      ...(it['hidden'] === true ? { hidden: true } : {}),
     };
     if (it['kind'] === 'text') {
       items.push({
@@ -330,10 +476,90 @@ export function sanitizeScene(raw: unknown): SceneSpec | null {
           width: Math.min(100, Math.max(2, asNumber(it['width'], 20))),
         });
       }
+    } else if (it['kind'] === 'avatar') {
+      // One avatar, first wins. The rounded-corner mask is a CSS mask on the one
+      // canvas, so a second is a constraint enforced by data rather than hope.
+      if (hasAvatar) continue;
+      hasAvatar = true;
+      const framing = it['framing'];
+      items.push({
+        id: base.id,
+        x: base.x,
+        y: base.y,
+        ...(base.hidden ? { hidden: true } : {}),
+        kind: 'avatar',
+        w: Math.min(100, Math.max(5, asNumber(it['w'], 100))),
+        h: Math.min(100, Math.max(5, asNumber(it['h'], 100))),
+        framing: framing === 'head' || framing === 'full' ? framing : 'bust',
+        panX: clampRange(asNumber(it['panX'], 0), -5, 5),
+        panY: clampRange(asNumber(it['panY'], 0), -5, 5),
+        zoom: clampRange(asNumber(it['zoom'], 1), 0.25, 6),
+        radius: Math.min(50, Math.max(0, asNumber(it['radius'], 0))),
+        plate: sanitizeColor(it['plate']),
+      });
     }
   }
 
-  return { version: 1, background, items };
+  /*
+   * v1 → v2. A v1 scene had no avatar row because the avatar WAS the canvas —
+   * absence meant "fills the frame". Synthesising that makes every link already
+   * pasted into someone's OBS render exactly as it did before.
+   */
+  if (!hasAvatar) items.unshift(fullFrameAvatar());
+  void version;
+
+  return { version: SCENE_VERSION, background, items };
+}
+
+/**
+ * Strips keys equal to their defaults before serialising.
+ *
+ * Lossless by construction: `sanitizeScene` fills every default back in on the
+ * way out, so anything omitted here is restored identically. This is what keeps
+ * the injected avatar row at roughly 40 bytes instead of 180 — headroom the
+ * shared URL needs, since a scene rides in the hash.
+ */
+export function compact(spec: SceneSpec): unknown {
+  const items = spec.items.map((item) => {
+    const out: Record<string, unknown> = { kind: item.kind, id: item.id };
+    if (item.x !== 50) out['x'] = round(item.x);
+    if (item.y !== 50) out['y'] = round(item.y);
+    if (item.hidden) out['hidden'] = true;
+    if (item.kind !== 'avatar' && item.band !== 'front') out['band'] = item.band;
+
+    if (item.kind === 'text') {
+      out['text'] = item.text;
+      if (item.size !== 48) out['size'] = round(item.size);
+      if (item.color !== '#ffffff') out['color'] = item.color;
+      if (item.bold) out['bold'] = true;
+      if (!item.shadow) out['shadow'] = false;
+    } else if (item.kind === 'image') {
+      out['url'] = item.url;
+      if (item.width !== 20) out['width'] = round(item.width);
+    } else {
+      if (item.w !== 100) out['w'] = round(item.w);
+      if (item.h !== 100) out['h'] = round(item.h);
+      if (item.framing !== 'bust') out['framing'] = item.framing;
+      if (item.panX !== 0) out['panX'] = round(item.panX);
+      if (item.panY !== 0) out['panY'] = round(item.panY);
+      if (item.zoom !== 1) out['zoom'] = round(item.zoom);
+      if (item.radius !== 0) out['radius'] = round(item.radius);
+      if (item.plate) out['plate'] = item.plate;
+    }
+    return out;
+  });
+
+  const out: Record<string, unknown> = { version: SCENE_VERSION, items };
+  if (spec.background.type !== 'none') out['background'] = spec.background;
+  return out;
+}
+
+function round(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+function clampRange(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function sanitizeBackground(raw: unknown): SceneBackground {

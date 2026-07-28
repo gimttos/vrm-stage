@@ -164,23 +164,28 @@ export class Stage {
    *
    * Ctrl is required so a future click-to-interact scene does not fight the
    * camera for plain drags.
+   *
+   * Bound to the STAGE, not the canvas. Once the avatar became a scene item it
+   * gained an edit grip that sits over the canvas — a full-frame avatar's grip
+   * covers it entirely — so canvas-bound listeners would never fire again. The
+   * grip lets modifier gestures bubble instead of swallowing them.
    */
   private bindViewControls(): void {
-    const canvas = this.renderer.domElement;
+    const surface = this.container;
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
 
-    canvas.addEventListener('pointerdown', (event) => {
+    surface.addEventListener('pointerdown', (event) => {
       if (!event.ctrlKey && !event.metaKey) return;
       dragging = true;
       lastX = event.clientX;
       lastY = event.clientY;
-      canvas.setPointerCapture(event.pointerId);
+      surface.setPointerCapture(event.pointerId);
       event.preventDefault();
     });
 
-    canvas.addEventListener('pointermove', (event) => {
+    surface.addEventListener('pointermove', (event) => {
       if (!dragging) return;
 
       // Convert pixels to world units at the subject's depth, so a drag moves the
@@ -188,7 +193,7 @@ export class Stage {
       const distance = this.baseDistance / this.view.zoom;
       const worldPerPixel =
         (2 * distance * Math.tan((this.camera.fov * Math.PI) / 360)) /
-        Math.max(1, canvas.clientHeight);
+        Math.max(1, surface.clientHeight);
 
       // The camera moves opposite the cursor so the avatar appears to follow it.
       this.view.panX -= (event.clientX - lastX) * worldPerPixel;
@@ -201,19 +206,22 @@ export class Stage {
     const endDrag = (event: PointerEvent) => {
       if (!dragging) return;
       dragging = false;
-      if (canvas.hasPointerCapture(event.pointerId)) {
-        canvas.releasePointerCapture(event.pointerId);
+      if (surface.hasPointerCapture(event.pointerId)) {
+        surface.releasePointerCapture(event.pointerId);
       }
       // Fired at the end of the gesture, not per move: the composition matters
       // once the operator has finished placing it.
       this.emitViewChange();
     };
-    canvas.addEventListener('pointerup', endDrag);
-    canvas.addEventListener('pointercancel', endDrag);
+    surface.addEventListener('pointerup', endDrag);
+    surface.addEventListener('pointercancel', endDrag);
 
-    canvas.addEventListener(
+    surface.addEventListener(
       'wheel',
       (event) => {
+        // Scrolling over an overlay is aimed at the overlay, not the camera.
+        // Grips are exempt — a grip IS the avatar's stand-in.
+        if ((event.target as HTMLElement | null)?.closest?.('.scene-item')) return;
         event.preventDefault();
         const factor = Math.exp(-event.deltaY * 0.0015);
         this.view.zoom = Math.min(6, Math.max(0.25, this.view.zoom * factor));

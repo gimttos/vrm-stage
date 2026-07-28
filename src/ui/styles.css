@@ -49,22 +49,21 @@ body.obs #ui {
 
 /* ---------- scene layer ---------- */
 
-/* The layer itself never intercepts input — Ctrl-drag camera panning happens on
-   the canvas underneath. Only the items are interactive, and only in the editor. */
-#scene-layer {
+/* Three DOM bands around the WebGL canvas. The canvas is one element and cannot
+   be interleaved with DOM siblings, so "behind the avatar" and "in front of it"
+   is the honest model — #scene-back is inserted before the canvas, the rest
+   after. None of them intercept input; Ctrl-drag camera panning happens on the
+   canvas underneath and only items and grips are interactive. */
+#scene-back,
+#scene-front,
+#scene-edit {
   position: absolute;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
 }
 
-#scene-layer.editable .scene-text,
-#scene-layer.editable .scene-image {
-  pointer-events: auto;
-}
-
-.scene-text,
-.scene-image {
+.scene-item {
   position: absolute;
   transform: translate(-50%, -50%);
   user-select: none;
@@ -78,12 +77,42 @@ body.obs #ui {
   font-family: inherit;
 }
 
-#scene-layer.editable .scene-text,
-#scene-layer.editable .scene-image {
+.scene-item[hidden] {
+  display: none;
+}
+
+/* Only real items are grabbable, and only in the editor. Grips stay inert —
+   see renderAvatarGrip: the topmost band must not shadow the scene below it. */
+#scene-front.editable .scene-item,
+#scene-back.editable .scene-item {
+  pointer-events: auto;
   cursor: move;
 }
 
-#scene-layer.editable .selected {
+/* Live output has no edit band at all, so nothing there is grabbable. */
+body.live #scene-edit {
+  display: none;
+}
+
+.scene-grip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1px dashed rgba(167, 139, 250, 0.55);
+  border-radius: 6px;
+  background: rgba(167, 139, 250, 0.06);
+}
+
+.scene-avatar-grip::after {
+  content: '아바타';
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  color: var(--accent);
+  font: 10px ui-sans-serif, system-ui, sans-serif;
+  opacity: 0.85;
+}
+
+.selected {
   outline: 2px dashed var(--accent);
   outline-offset: 4px;
 }

@@ -604,7 +604,7 @@ export class Panel {
       boldLabel.append(boldToggle, document.createTextNode('굵게'));
 
       box.append(row([label('색'), colorInput, boldLabel]));
-    } else {
+    } else if (item.kind === 'image') {
       const widthInput = document.createElement('input');
       widthInput.type = 'range';
       widthInput.min = '4';
@@ -614,9 +614,31 @@ export class Panel {
         this.sceneApi.updateItem(item.id, { width: Number(widthInput.value) });
       });
       box.append(row([label('너비'), widthInput]));
+    } else {
+      // Avatar: size and corner rounding. Framing and view live in the 아바타 tab,
+      // which is where someone goes to change how the avatar itself is posed.
+      for (const [key, text, min, max] of [
+        ['w', '너비', 5, 100],
+        ['h', '높이', 5, 100],
+        ['radius', '모서리', 0, 50],
+      ] as const) {
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = String(min);
+        input.max = String(max);
+        input.value = String(item[key]);
+        input.addEventListener('input', () => {
+          this.sceneApi.updateItem(item.id, { [key]: Number(input.value) });
+        });
+        box.append(row([label(text), input]));
+      }
     }
 
-    box.append(row([button('아이템 삭제', 'wide', () => this.sceneApi.removeItem(item.id))]));
+    // The avatar is the performer, not an overlay — deleting it would leave a
+    // scene with nothing to drive.
+    if (item.kind !== 'avatar') {
+      box.append(row([button('아이템 삭제', 'wide', () => this.sceneApi.removeItem(item.id))]));
+    }
   }
 
   private exportScene(): void {
