@@ -478,25 +478,25 @@ export class AvatarDriver {
     this.debugState.roll = roll;
 
     /*
-     * Three.js rotation signs run opposite to two of HeadPose's definitions.
+     * No extra negation here — three.js's rotation signs and MediaPipe's pitch
+     * and roll happen to agree once they meet in this bone.
      *
-     * A positive rotation about local X takes the nose DOWN, and a positive
-     * rotation about local Z takes the crown toward −X — but `HeadPose.pitch` is
-     * defined positive-is-up and `.roll` positive-is-toward-the-subject's-left.
-     * Yaw needs no correction: positive about Y already turns the nose the way
-     * the type promises.
+     * A previous pass negated both, reasoning that a positive rotation about
+     * local X takes the nose down while `HeadPose.pitch` is documented
+     * positive-is-up. The reasoning was sound and the premise was not: the
+     * documented direction had never been checked against what the tracker
+     * actually emits. The synthetic probe then fed `pitch: +0.5` and asserted the
+     * nose should rise, so it confirmed the assumption instead of testing it, and
+     * real users had to switch on Pitch and Roll invert to undo the correction.
      *
-     * Measured identically on both spec fixtures, so this is a plain convention
-     * mismatch, not a rig difference. Correcting it here rather than by flipping
-     * the panel defaults keeps `invertPitch`/`invertRoll` meaning what they say —
-     * a per-camera correction, not a permanent workaround everyone must find.
+     * Two spec fixtures needing the SAME toggles is what settled it: that rules
+     * out a rig difference (rigFlip above already handles those) and leaves a
+     * single shared baseline sign, which belongs at zero, not at two switches
+     * every user must discover.
      */
-    const nod = -pitch;
-    const tilt = -roll;
-
     const headShare = 1 - neckShare;
-    head.rotation.set(nod * headShare, yaw * headShare, tilt * headShare, 'YXZ');
-    neck?.rotation.set(nod * neckShare, yaw * neckShare, tilt * neckShare, 'YXZ');
+    head.rotation.set(pitch * headShare, yaw * headShare, roll * headShare, 'YXZ');
+    neck?.rotation.set(pitch * neckShare, yaw * neckShare, roll * neckShare, 'YXZ');
   }
 
   private applyEyes(vrm: VRM, frame: PoseFrame): void {

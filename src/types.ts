@@ -130,12 +130,22 @@ export interface BodyPose {
   tilt: number;
 }
 
+/**
+ * Head orientation in radians.
+ *
+ * The directions below are EMPIRICAL — they record what the trackers actually
+ * emit, confirmed against real cameras and both VRM spec fixtures, not what a
+ * coordinate convention suggests they ought to emit. An earlier version of this
+ * comment asserted the opposite for pitch and roll, a downstream negation was
+ * added to "correct" it, and users had to switch on Pitch and Roll invert to
+ * undo the correction. Do not change these from first principles; measure.
+ */
 export interface HeadPose {
-  /** Nod. Positive = looking up. */
+  /** Nod, as the rig consumes it: feeds the head bone's local X directly. */
   pitch: number;
   /** Turn. Positive = turning to the subject's left. */
   yaw: number;
-  /** Tilt. Positive = tilting to the subject's left. */
+  /** Tilt, as the rig consumes it: feeds the head bone's local Z directly. */
   roll: number;
 }
 
