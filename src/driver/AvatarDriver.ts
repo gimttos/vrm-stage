@@ -134,6 +134,12 @@ export class AvatarDriver {
   private readonly lookTarget = new THREE.Object3D();
   private readonly headWorld = new THREE.Vector3();
   private readonly restQuat = new THREE.Quaternion();
+  /** The avatar's own axes; VRM 0.x rigs are turned 180° from 1.0 ones. */
+  private readonly avatarForward = new THREE.Vector3(0, 0, 1);
+  private readonly avatarRight = new THREE.Vector3(1, 0, 0);
+  private readonly avatarUp = new THREE.Vector3(0, 1, 0);
+  /** −1 when the rig is turned 180° (VRM 0.x after rotateVRM0), +1 otherwise. */
+  private rigFlip = 1;
   private readonly euler = new THREE.Euler();
 
   private browUpMorphs: { mesh: THREE.Mesh; index: number }[] = [];
@@ -180,6 +186,18 @@ export class AvatarDriver {
 
     // The idle arm pose depends on this rig's rest geometry, not on a constant.
     this.hands.prepareIdle(vrm);
+
+    // Where "in front" is for THIS model. A VRM 0.x rig faces the opposite way
+    // from a 1.0 one, and a gaze target placed on world +Z put its eyes behind
+    // its own head.
+    vrm.scene.getWorldQuaternion(this.restQuat);
+    this.avatarForward.set(0, 0, 1).applyQuaternion(this.restQuat).normalize();
+    this.avatarRight.set(1, 0, 0).applyQuaternion(this.restQuat).normalize();
+    this.avatarUp.set(0, 1, 0).applyQuaternion(this.restQuat).normalize();
+    // A 180° turn negates X and Z, so head yaw and roll come out backwards on a
+    // 0.x rig while pitch — about the untouched Y-perpendicular axis — is fine.
+    this.rigFlip = this.avatarForward.z < 0 ? -1 : 1;
+    this.restQuat.identity();
 
     this.browUpMorphs = morphs.find('BRW_Surprised');
     this.browDownMorphs = morphs.find('BRW_Angry');
@@ -424,11 +442,13 @@ export class AvatarDriver {
       this.yawFilter.filter(frame.head.yaw - yawOffset, frame.timestamp) *
       (invertYaw ? -1 : 1) *
       mirrorSign *
+      this.rigFlip *
       headGain;
     const roll =
       this.rollFilter.filter(frame.head.roll - rollOffset, frame.timestamp) *
       (invertRoll ? -1 : 1) *
       mirrorSign *
+      this.rigFlip *
       headGain;
 
     this.debugState.pitch = pitch;
@@ -494,7 +514,7 @@ export class AvatarDriver {
     // eyes stay frozen wherever they happened to be when it was switched off.
     // The avatar faces +Z (toward the camera), so straight ahead is +Z.
     if (!this.config.gaze) {
-      this.lookTarget.position.set(this.headWorld.x, this.headWorld.y, this.headWorld.z + 1);
+      this.lookTarget.position.copy(this.headWorld).add(this.avatarForward);
       return;
     }
 
@@ -518,15 +538,15 @@ export class AvatarDriver {
       gazeSign;
     const y = this.gazeYFilter.filter(deadzone(rawY, 0.05), frame.timestamp) * gazeSign;
 
-    // The avatar faces +Z toward the viewer (glTF/VRM1 convention; rotateVRM0
-    // normalises 0.x models to match), so the gaze target sits one metre out
-    // along +Z. This sign was backwards once — the eyes were aiming at a point
-    // inside the avatar's skull.
-    this.lookTarget.position.set(
-      this.headWorld.x + x * 0.45,
-      this.headWorld.y + y * 0.35,
-      this.headWorld.z + 1,
-    );
+    // One metre out along THIS avatar's forward, not world +Z. Assuming +Z was
+    // wrong in two ways: the sign was once simply backwards, aiming the eyes
+    // inside the skull, and even corrected it only held for VRM 1.0 rigs — a 0.x
+    // model is turned 180°, so its eyes tracked a point behind its own head.
+    this.lookTarget.position
+      .copy(this.headWorld)
+      .add(this.avatarForward)
+      .addScaledVector(this.avatarRight, x * 0.45)
+      .addScaledVector(this.avatarUp, y * 0.35);
   }
 
   private applyBrows(frame: PoseFrame): void {

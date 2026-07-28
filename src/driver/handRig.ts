@@ -146,6 +146,23 @@ export class HandRig {
   private readonly basisZ = new THREE.Vector3();
   private readonly basisMatrix = new THREE.Matrix4();
 
+  /**
+   * The avatar's own axes in world space, solved per model.
+   *
+   * Targets used to be built straight from world X/Y/Z, which silently assumed
+   * every model faces +Z. VRM 0.x models do not — `rotateVRM0` turns them 180° —
+   * so on those rigs a hand meant to reach right went left and a hand meant to
+   * reach forward went behind the avatar's back. Measured on the 0.x fixture:
+   * every one of those signs came out inverted against the 1.0 fixture.
+   *
+   * Reaching "in front of the avatar" has to mean in front of THAT avatar.
+   */
+  private readonly avatarRight = new THREE.Vector3(1, 0, 0);
+  private readonly avatarUp = new THREE.Vector3(0, 1, 0);
+  private readonly avatarForward = new THREE.Vector3(0, 0, 1);
+  private readonly rootQuat = new THREE.Quaternion();
+
+
   applied = 0;
 
   /**
@@ -159,6 +176,13 @@ export class HandRig {
   prepareIdle(vrm: VRM): void {
     const humanoid = vrm.humanoid;
     if (!humanoid) return;
+
+    // Solve the avatar's basis first — the idle target below is expressed in it.
+    vrm.scene.updateWorldMatrix(true, false);
+    vrm.scene.getWorldQuaternion(this.rootQuat);
+    this.avatarRight.set(1, 0, 0).applyQuaternion(this.rootQuat).normalize();
+    this.avatarUp.set(0, 1, 0).applyQuaternion(this.rootQuat).normalize();
+    this.avatarForward.set(0, 0, 1).applyQuaternion(this.rootQuat).normalize();
 
     for (const side of ['left', 'right'] as Side[]) {
       const prefix = side;
@@ -181,11 +205,17 @@ export class HandRig {
       if (this.restDirection.lengthSq() > 1e-8) {
         this.restDirection.normalize();
 
-        // Down, with a little clearance so the arm does not clip the torso. The
-        // outward component follows the arm's own resting side, so this works
-        // whichever way the model happens to face.
-        const outward = Math.sign(this.restDirection.x) || (side === 'left' ? 1 : -1);
-        this.targetDirection.set(outward * 0.22, -1, 0.05).normalize();
+        // Down, with a little clearance so the arm does not clip the torso.
+        // Built from the avatar's own axes, and the outward direction is taken
+        // from where this arm actually rests, so it holds whichever way the
+        // model faces.
+        const outward = Math.sign(this.restDirection.dot(this.avatarRight)) || (side === 'left' ? -1 : 1);
+        this.targetDirection
+          .copy(this.avatarUp)
+          .multiplyScalar(-1)
+          .addScaledVector(this.avatarRight, outward * 0.22)
+          .addScaledVector(this.avatarForward, 0.05)
+          .normalize();
 
         upper.parent?.getWorldQuaternion(this.parentInverse);
         this.parentInverse.invert();
@@ -375,6 +405,19 @@ export class HandRig {
     // spot on any model. The avatar faces +Z, so in front is +Z — this sign was
     // backwards once, and the IK dutifully reached behind the avatar's back.
     const unit = scale * 0.35 * this.config.armReach;
+
+    /*
+     * World axes, deliberately.
+     *
+     * Rebuilding this in the rig's own basis was tried, on the theory that a
+     * VRM 0.x model — whose scene `rotateVRM0` turns 180° — needs its own frame.
+     * It made things worse (the hand went from 0.15 off-side to 0.36 off-side),
+     * and the reason is worth recording: the eye bones show the avatar's own LEFT
+     * sits at world +X on BOTH specs. The 180° scene turn does not reorient the
+     * body in world space, so world axes are already right here and the basis
+     * treatment double-counted a rotation that the parent-quaternion conversion
+     * below already handles.
+     */
     this.handWorld.set(
       this.headWorld.x + x * unit,
       this.headWorld.y + y * unit,
