@@ -8,11 +8,14 @@ export interface BodyRigConfig {
   torso: boolean;
   /** Multiplier on everything here. Above 1 exaggerates, which reads on stream. */
   gain: number;
+  /** Flip which way the torso leans, on top of `mirror`. */
+  invertSway: boolean;
 }
 
 export const defaultBodyRigConfig: BodyRigConfig = {
   torso: true,
   gain: 1,
+  invertSway: false,
 };
 
 /** Radians of spine rotation at a full-width sway. Small on purpose. */
@@ -86,7 +89,7 @@ export class BodyRig {
      * the same single decision `mirror` makes everywhere else: which side of the
      * screen the movement shows up on.
      */
-    const toScreen = mirror ? 1 : -1;
+    const toScreen = (mirror ? 1 : -1) * (this.config.invertSway ? -1 : 1);
     const amount = (sway + tilt) * toScreen;
 
     this.rotate(humanoid, 'spine', amount * SPINE_SHARE);

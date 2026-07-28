@@ -34,6 +34,8 @@ export interface HandRigConfig {
   invertArmY: boolean;
   /** Depth comes from apparent hand size, which foreshortening can invert. */
   invertArmZ: boolean;
+  /** Horizontal reach, on top of `mirror`. For a feed already flipped in software. */
+  invertArmX: boolean;
   /** Rotate the wrist from the tracked palm orientation. */
   wrist: boolean;
 }
@@ -45,6 +47,7 @@ export const defaultHandRigConfig: HandRigConfig = {
   invertCurl: false,
   invertArmY: false,
   invertArmZ: false,
+  invertArmX: false,
   wrist: true,
 };
 
@@ -292,7 +295,10 @@ export class HandRig {
     // Torso length is the same scale proxy the camera framing uses.
     const scale = Math.max(0.15, this.headWorld.y - this.hipsWorld.y);
 
-    const x = this.smooth(this.posFilters, `${side}:x`, relative.x, timestamp) * mirrorSign;
+    const x =
+      this.smooth(this.posFilters, `${side}:x`, relative.x, timestamp) *
+      mirrorSign *
+      (this.config.invertArmX ? -1 : 1);
     const y =
       this.smooth(this.posFilters, `${side}:y`, relative.y, timestamp) *
       (this.config.invertArmY ? -1 : 1);

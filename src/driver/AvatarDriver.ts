@@ -69,6 +69,8 @@ export interface DriverConfig {
 
   /** Eye tracking via VRM lookAt. */
   gaze: boolean;
+  /** Flip gaze direction, for a tracker that reports eye look the other way. */
+  invertGaze: boolean;
 }
 
 export const defaultDriverConfig: DriverConfig = {
@@ -87,6 +89,7 @@ export const defaultDriverConfig: DriverConfig = {
   neckShare: 0.4,
   brows: true,
   gaze: true,
+  invertGaze: false,
 };
 
 export interface DriverDebug {
@@ -130,6 +133,7 @@ export class AvatarDriver {
 
   private readonly lookTarget = new THREE.Object3D();
   private readonly headWorld = new THREE.Vector3();
+  private readonly restQuat = new THREE.Quaternion();
   private readonly euler = new THREE.Euler();
 
   private browUpMorphs: { mesh: THREE.Mesh; index: number }[] = [];
@@ -186,38 +190,55 @@ export class AvatarDriver {
    * frame; `delta` drives spring bones, so skipping it freezes hair physics.
    */
   update(vrm: VRM, frame: PoseFrame | null, delta: number): void {
-    if (frame?.tracked) {
-      // A full-rig source (VMC) has already solved the pose, including limbs and
-      // fingers a webcam cannot see. Re-deriving it from blendshapes would throw
-      // that away, so the rig wins whenever it is present.
-      const rigged = this.applyRig(vrm, frame);
-      this.debugState.rigBones = rigged;
+    const tracked = frame?.tracked ?? false;
+    // Filters measure elapsed time, so a frameless tick still needs a clock.
+    const timestamp = frame?.timestamp ?? performance.now();
 
-      if (rigged === 0) {
+    // A full-rig source (VMC) has already solved the pose, including limbs and
+    // fingers a webcam cannot see. Re-deriving it from blendshapes would throw
+    // that away, so the rig wins whenever it is present.
+    const rigged = tracked && frame ? this.applyRig(vrm, frame) : 0;
+    this.debugState.rigBones = rigged;
+
+    if (rigged === 0) {
+      if (tracked && frame) {
         this.applyHead(vrm, frame);
         this.applyGaze(vrm, frame);
-        // A VMC performer already sends arms and fingers, so webcam hand
-        // tracking only runs when there is no incoming rig to overwrite.
-        //
-        // `frame.hands` carries PHYSICAL sides. Mirror mode maps the user's
-        // right hand onto the avatar's left (what a mirror shows); non-mirror
-        // copies anatomically. This swap must travel with the position flip —
-        // flipping one without the other is how arms end up crossing the body.
-        const hands = this.config.mirror
-          ? { left: frame.hands.right, right: frame.hands.left }
-          : frame.hands;
-        this.hands.apply(vrm, hands, frame.timestamp, this.config.mirror);
-        this.debugState.handBones = this.hands.applied;
-
-        // Shoulders come from a separate detector and separate bones, so they
-        // run alongside the hands rather than through them.
-        this.body.apply(vrm, frame.body, frame.timestamp, this.config.mirror);
-        this.debugState.bodyBones = this.body.applied;
       } else {
-        this.debugState.handBones = 0;
-        this.debugState.bodyBones = 0;
+        // Otherwise the head keeps whatever angle it had when the subject left.
+        this.relaxHead(vrm);
       }
 
+      /*
+       * Hands and body run whether or not the subject is tracked — passing
+       * nulls is exactly what eases the limbs to the idle pose.
+       *
+       * These used to sit inside a `tracked` guard, so losing the face stopped
+       * the calls entirely and the arms froze mid-air. Anyone whose hands were
+       * up when tracking dropped got an avatar stuck in a permanent cheer, with
+       * no way back short of a reload. The inner early-return in HandRig had the
+       * same shape and was fixed; this outer one was missed.
+       */
+      const live = tracked && frame ? frame.hands : { left: null, right: null };
+
+      // `frame.hands` carries PHYSICAL sides. Mirror mode maps the user's right
+      // hand onto the avatar's left (what a mirror shows); non-mirror copies
+      // anatomically. This swap must travel with the position flip — flipping
+      // one without the other is how arms end up crossing the body.
+      const hands = this.config.mirror ? { left: live.right, right: live.left } : live;
+      this.hands.apply(vrm, hands, timestamp, this.config.mirror);
+      this.debugState.handBones = this.hands.applied;
+
+      // Upper body comes from a separate detector and separate bones, so it runs
+      // alongside the hands rather than through them.
+      this.body.apply(vrm, tracked ? (frame?.body ?? null) : null, timestamp, this.config.mirror);
+      this.debugState.bodyBones = this.body.applied;
+    } else {
+      this.debugState.handBones = 0;
+      this.debugState.bodyBones = 0;
+    }
+
+    if (tracked && frame) {
       if (frame.expressions.size > 0) {
         this.applyVRMExpressions(vrm, frame);
       } else {
@@ -225,7 +246,8 @@ export class AvatarDriver {
         this.applyMouth(vrm, frame);
       }
     }
-    this.debugState.tracked = frame?.tracked ?? false;
+
+    this.debugState.tracked = tracked;
 
     // Emotions apply with or without tracking — a hotkey should work while the
     // camera is off — and before vrm.update(), which consumes expression values.
@@ -235,8 +257,18 @@ export class AvatarDriver {
 
     // Must follow vrm.update() — see class docs. Brow morphs need ARKit brow
     // coefficients, which a VMC performer does not send.
-    if (frame?.tracked && this.config.brows && frame.shapes.has('browInnerUp')) {
+    if (tracked && frame && this.config.brows && frame.shapes.has('browInnerUp')) {
       this.applyBrows(frame);
+    }
+  }
+
+  /** Eases the head and neck home, so a turned head does not freeze when lost. */
+  private relaxHead(vrm: VRM): void {
+    const humanoid = vrm.humanoid;
+    if (!humanoid) return;
+
+    for (const name of ['head', 'neck'] as const) {
+      humanoid.getNormalizedBoneNode(name)?.quaternion.slerp(this.restQuat, 0.08);
     }
   }
 
@@ -476,10 +508,12 @@ export class AvatarDriver {
     const rawX = (outLeft - inLeft + inRight - outRight) / 2;
     const rawY = (upLeft + upRight) / 2 - (downLeft + downRight) / 2;
 
+    const gazeSign = this.config.invertGaze ? -1 : 1;
     const x =
       this.gazeXFilter.filter(deadzone(rawX, 0.05), frame.timestamp) *
-      (this.config.mirror ? -1 : 1);
-    const y = this.gazeYFilter.filter(deadzone(rawY, 0.05), frame.timestamp);
+      (this.config.mirror ? -1 : 1) *
+      gazeSign;
+    const y = this.gazeYFilter.filter(deadzone(rawY, 0.05), frame.timestamp) * gazeSign;
 
     // The avatar faces +Z toward the viewer (glTF/VRM1 convention; rotateVRM0
     // normalises 0.x models to match), so the gaze target sits one metre out

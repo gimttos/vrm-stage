@@ -11,7 +11,14 @@ import type { Framing } from '../stage/Stage';
 export type TrackingState = 'off' | 'starting' | 'on';
 
 type NumericKey = 'headGain' | 'neckShare' | 'pitchOffset' | 'yawOffset' | 'rollOffset';
-type BooleanKey = 'mirror' | 'invertPitch' | 'invertYaw' | 'invertRoll' | 'brows' | 'gaze';
+type BooleanKey =
+  | 'mirror'
+  | 'invertPitch'
+  | 'invertYaw'
+  | 'invertRoll'
+  | 'brows'
+  | 'gaze'
+  | 'invertGaze';
 
 export interface PanelCallbacks {
   onPickFile(): void;
@@ -259,6 +266,7 @@ export class Panel {
       this.toggle('좌우 미러', 'mirror'),
       this.toggle('눈썹 구동 (BRW 모프)', 'brows'),
       this.toggle('시선 추적', 'gaze'),
+      this.toggle('시선 반전', 'invertGaze'),
     ]);
   }
 
@@ -271,8 +279,10 @@ export class Panel {
       this.handToggle('손가락 굽힘 반전', 'invertCurl'),
       this.handToggle('팔 상하 반전', 'invertArmY'),
       this.handToggle('팔 앞뒤 반전', 'invertArmZ'),
+      this.handToggle('팔 좌우 반전', 'invertArmX'),
       el('h2', '', ['상체']),
       this.bodyToggle('상체 흔들림', 'torso'),
+      this.bodyToggle('상체 좌우 반전', 'invertSway'),
       this.bodySlider('상체 강도', 'gain', 0.2, 2.5, 0.05),
       el('p', 'hint', [
         '상체를 좌우로 흔들면 아바타 상체가 따라 흔들립니다. 세 번째 검출기' +
@@ -649,7 +659,7 @@ export class Panel {
     return row([wrapper]);
   }
 
-  private bodyToggle(text: string, key: 'torso'): HTMLElement {
+  private bodyToggle(text: string, key: 'torso' | 'invertSway'): HTMLElement {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = this.bodyConfig[key];
@@ -682,7 +692,7 @@ export class Panel {
 
   private handToggle(
     text: string,
-    key: 'fingers' | 'arms' | 'invertCurl' | 'wrist' | 'invertArmY' | 'invertArmZ',
+    key: 'fingers' | 'arms' | 'invertCurl' | 'wrist' | 'invertArmY' | 'invertArmZ' | 'invertArmX',
   ): HTMLElement {
     const input = document.createElement('input');
     input.type = 'checkbox';

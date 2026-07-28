@@ -438,6 +438,7 @@ const DRIVER_KEYS = [
   'neckShare',
   'brows',
   'gaze',
+  'invertGaze',
 ] as const;
 const HAND_KEYS = [
   'fingers',
@@ -447,8 +448,9 @@ const HAND_KEYS = [
   'wrist',
   'invertArmY',
   'invertArmZ',
+  'invertArmX',
 ] as const;
-const BODY_KEYS = ['torso', 'gain'] as const;
+const BODY_KEYS = ['torso', 'gain', 'invertSway'] as const;
 
 function performConfig(): PerformConfig {
   const driverConfig: Record<string, number | boolean> = {};
