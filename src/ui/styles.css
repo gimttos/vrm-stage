@@ -37,8 +37,16 @@ body:not(.obs) {
   inset: 0;
 }
 
+/* Positioned, not static — this is load-bearing.
+   The bands are `position: absolute`, and a positioned element paints above a
+   static one no matter what the DOM order says. A static canvas therefore ends
+   up UNDER the back band, and setting a background colour buries the avatar.
+   Giving the canvas a position puts all four siblings on equal footing, so
+   paint order follows DOM order: back, canvas, front, edit. */
 #stage canvas {
   display: block;
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }
