@@ -796,6 +796,26 @@ function animate(): void {
 
 animate();
 
+/*
+ * Rig sign regression test. Axis signs have been the single largest source of
+ * churn here, so the check that catches them lives in the repo rather than in
+ * whoever last debugged it: see `src/dev/rigProbe.ts`.
+ *
+ * Dev-only in both senses — the import is stripped from production builds, and
+ * the fixtures it loads are served only by the dev middleware.
+ */
+if (import.meta.env.DEV && params.get('selftest') === '1') {
+  void (async () => {
+    const { runRigProbe, renderRigProbe } = await import('./dev/rigProbe');
+    panel.setNotice('리그 부호 회귀 테스트 실행 중… (모델 2개 로드)');
+    try {
+      renderRigProbe(await runRigProbe(), uiRoot);
+    } catch (error) {
+      panel.showError(`셀프테스트 실패 — ${describe(error)}`);
+    }
+  })();
+}
+
 // Test seam: lets an automated session (or a curious person in devtools) inject
 // PoseFrames and inspect the result numerically. Dev builds only.
 if (import.meta.env.DEV) {
