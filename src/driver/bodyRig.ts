@@ -53,6 +53,13 @@ export class BodyRig {
 
   applied = 0;
 
+  /**
+   * −1 when the rig's bone-local X/Z run backwards against world (a VRM 0.x
+   * scene, turned 180° by `rotateVRM0`). Sway is written about spine local Z, so
+   * it follows. Set by {@link AvatarDriver.attach}.
+   */
+  axisFlip = 1;
+
   private readonly filters = new Map<string, OneEuroFilter>();
   private readonly scratch = new THREE.Euler();
   private readonly target = new THREE.Quaternion();
@@ -89,7 +96,8 @@ export class BodyRig {
      * the same single decision `mirror` makes everywhere else: which side of the
      * screen the movement shows up on.
      */
-    const toScreen = (mirror ? 1 : -1) * (this.config.invertSway ? -1 : 1);
+    const toScreen =
+      (mirror ? 1 : -1) * (this.config.invertSway ? -1 : 1) * this.axisFlip;
     const amount = (sway + tilt) * toScreen;
 
     this.rotate(humanoid, 'spine', amount * SPINE_SHARE);

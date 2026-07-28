@@ -134,11 +134,14 @@ export class AvatarDriver {
   private readonly lookTarget = new THREE.Object3D();
   private readonly headWorld = new THREE.Vector3();
   private readonly restQuat = new THREE.Quaternion();
-  /** The avatar's own axes; VRM 0.x rigs are turned 180° from 1.0 ones. */
-  private readonly avatarForward = new THREE.Vector3(0, 0, 1);
-  private readonly avatarRight = new THREE.Vector3(1, 0, 0);
-  private readonly avatarUp = new THREE.Vector3(0, 1, 0);
-  /** −1 when the rig is turned 180° (VRM 0.x after rotateVRM0), +1 otherwise. */
+  /**
+   * −1 when the rig's bone-LOCAL X and Z run backwards against world.
+   *
+   * True for a VRM 0.x model, whose scene `rotateVRM0` turns 180° about Y. Only
+   * local frames are affected; world anatomy is identical on both specs, so this
+   * belongs on rotations written into a bone (pitch, roll, torso sway) and NOT on
+   * world-space targets (arm reach, gaze).
+   */
   private rigFlip = 1;
   private readonly euler = new THREE.Euler();
 
@@ -187,17 +190,25 @@ export class AvatarDriver {
     // The idle arm pose depends on this rig's rest geometry, not on a constant.
     this.hands.prepareIdle(vrm);
 
-    // Where "in front" is for THIS model. A VRM 0.x rig faces the opposite way
-    // from a 1.0 one, and a gaze target placed on world +Z put its eyes behind
-    // its own head.
+    /*
+     * Does this rig's bone-LOCAL frame run backwards against world?
+     *
+     * `rotateVRM0` turns a 0.x scene 180° about Y. World anatomy is unaffected —
+     * the eye bones put the avatar's left at world +X and its face at world +Z on
+     * both specs — but every normalized bone's local X and Z now point the other
+     * way, while local Y is untouched because the turn is about Y.
+     *
+     * So the rule for every rotation written into a bone's local frame is: flip
+     * it if it is about X or Z, leave it if it is about Y. World-space targets
+     * (arm reach, gaze) need no correction at all.
+     */
+    vrm.scene.updateWorldMatrix(true, false);
     vrm.scene.getWorldQuaternion(this.restQuat);
-    this.avatarForward.set(0, 0, 1).applyQuaternion(this.restQuat).normalize();
-    this.avatarRight.set(1, 0, 0).applyQuaternion(this.restQuat).normalize();
-    this.avatarUp.set(0, 1, 0).applyQuaternion(this.restQuat).normalize();
-    // A 180° turn negates X and Z, so head yaw and roll come out backwards on a
-    // 0.x rig while pitch — about the untouched Y-perpendicular axis — is fine.
-    this.rigFlip = this.avatarForward.z < 0 ? -1 : 1;
+    this.rigFlip = this.restQuat.w * this.restQuat.w < 0.5 ? -1 : 1;
     this.restQuat.identity();
+
+    // Torso sway is written about spine local Z, so it follows the same rule.
+    this.body.axisFlip = this.rigFlip;
 
     this.browUpMorphs = morphs.find('BRW_Surprised');
     this.browDownMorphs = morphs.find('BRW_Angry');
@@ -432,17 +443,28 @@ export class AvatarDriver {
     } = this.config;
     const mirrorSign = mirror ? -1 : 1;
 
-    // Offsets come off the raw signal, before gain — otherwise raising the gain
-    // would re-amplify the very tilt the calibration just removed.
+    /*
+     * Offsets come off the raw signal, before gain — otherwise raising the gain
+     * would re-amplify the very tilt the calibration just removed.
+     *
+     * `rigFlip` goes on PITCH and ROLL but never YAW. These are written into the
+     * head bone's LOCAL frame, and `rotateVRM0` turns a 0.x scene 180° about Y:
+     * that negates local X and Z (pitch, roll) and leaves local Y (yaw) exactly
+     * as it was. An earlier pass had this precisely backwards — it flipped yaw
+     * and left pitch alone — because the probe read the head's local +Z as the
+     * nose. On a 0.x rig the face looks along local −Z, so the two errors
+     * cancelled in the measurement and hid in the product: yaw came out right on
+     * the meter while a nod lifted the chin.
+     */
     const pitch =
       this.pitchFilter.filter(frame.head.pitch - pitchOffset, frame.timestamp) *
       (invertPitch ? -1 : 1) *
+      this.rigFlip *
       headGain;
     const yaw =
       this.yawFilter.filter(frame.head.yaw - yawOffset, frame.timestamp) *
       (invertYaw ? -1 : 1) *
       mirrorSign *
-      this.rigFlip *
       headGain;
     const roll =
       this.rollFilter.filter(frame.head.roll - rollOffset, frame.timestamp) *
@@ -455,9 +477,26 @@ export class AvatarDriver {
     this.debugState.yaw = yaw;
     this.debugState.roll = roll;
 
+    /*
+     * Three.js rotation signs run opposite to two of HeadPose's definitions.
+     *
+     * A positive rotation about local X takes the nose DOWN, and a positive
+     * rotation about local Z takes the crown toward −X — but `HeadPose.pitch` is
+     * defined positive-is-up and `.roll` positive-is-toward-the-subject's-left.
+     * Yaw needs no correction: positive about Y already turns the nose the way
+     * the type promises.
+     *
+     * Measured identically on both spec fixtures, so this is a plain convention
+     * mismatch, not a rig difference. Correcting it here rather than by flipping
+     * the panel defaults keeps `invertPitch`/`invertRoll` meaning what they say —
+     * a per-camera correction, not a permanent workaround everyone must find.
+     */
+    const nod = -pitch;
+    const tilt = -roll;
+
     const headShare = 1 - neckShare;
-    head.rotation.set(pitch * headShare, yaw * headShare, roll * headShare, 'YXZ');
-    neck?.rotation.set(pitch * neckShare, yaw * neckShare, roll * neckShare, 'YXZ');
+    head.rotation.set(nod * headShare, yaw * headShare, tilt * headShare, 'YXZ');
+    neck?.rotation.set(nod * neckShare, yaw * neckShare, tilt * neckShare, 'YXZ');
   }
 
   private applyEyes(vrm: VRM, frame: PoseFrame): void {
@@ -512,9 +551,8 @@ export class AvatarDriver {
 
     // Gaze off still has to park the target straight ahead every frame, or the
     // eyes stay frozen wherever they happened to be when it was switched off.
-    // The avatar faces +Z (toward the camera), so straight ahead is +Z.
     if (!this.config.gaze) {
-      this.lookTarget.position.copy(this.headWorld).add(this.avatarForward);
+      this.lookTarget.position.set(this.headWorld.x, this.headWorld.y, this.headWorld.z + 1);
       return;
     }
 
@@ -538,15 +576,20 @@ export class AvatarDriver {
       gazeSign;
     const y = this.gazeYFilter.filter(deadzone(rawY, 0.05), frame.timestamp) * gazeSign;
 
-    // One metre out along THIS avatar's forward, not world +Z. Assuming +Z was
-    // wrong in two ways: the sign was once simply backwards, aiming the eyes
-    // inside the skull, and even corrected it only held for VRM 1.0 rigs — a 0.x
-    // model is turned 180°, so its eyes tracked a point behind its own head.
-    this.lookTarget.position
-      .copy(this.headWorld)
-      .add(this.avatarForward)
-      .addScaledVector(this.avatarRight, x * 0.45)
-      .addScaledVector(this.avatarUp, y * 0.35);
+    /*
+     * A WORLD-space point one metre in front of the head.
+     *
+     * World is correct here and the rig's own basis is not: the eye bones show
+     * the avatar's face is world +Z and its left is world +X on BOTH specs, so
+     * only bone-LOCAL frames differ. Routing this through a per-rig forward
+     * vector was tried and aimed a 0.x model's eyes at a point behind its own
+     * head, because that vector describes the local frame, not the anatomy.
+     */
+    this.lookTarget.position.set(
+      this.headWorld.x + x * 0.45,
+      this.headWorld.y + y * 0.35,
+      this.headWorld.z + 1,
+    );
   }
 
   private applyBrows(frame: PoseFrame): void {

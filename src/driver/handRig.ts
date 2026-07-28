@@ -147,21 +147,40 @@ export class HandRig {
   private readonly basisMatrix = new THREE.Matrix4();
 
   /**
-   * The avatar's own axes in world space, solved per model.
+   * Rest frames measured from the loaded rig, captured by {@link prepareIdle}.
    *
-   * Targets used to be built straight from world X/Y/Z, which silently assumed
-   * every model faces +Z. VRM 0.x models do not — `rotateVRM0` turns them 180° —
-   * so on those rigs a hand meant to reach right went left and a hand meant to
-   * reach forward went behind the avatar's back. Measured on the 0.x fixture:
-   * every one of those signs came out inverted against the 1.0 fixture.
+   * The root cause of every 0.x arm inversion lived here. World anatomy is
+   * IDENTICAL on both specs — the eye bones prove the avatar's left is world +X
+   * and the face is world +Z either way — but `rotateVRM0` turns a 0.x scene
+   * 180° about Y, so every normalized bone's LOCAL frame has X and Z pointing
+   * backwards relative to world. Code that asserted local constants
+   * (`restDirection.set(sideSign, 0, 0)`) therefore started the shortest-arc
+   * solve from the wrong vector, and the solved arm came out negated on every
+   * axis — which is why the X/Z panel toggles could never fully fix it: Y and
+   * the elbow plane stayed inverted.
    *
-   * Reaching "in front of the avatar" has to mean in front of THAT avatar.
+   * Measuring instead of asserting makes the spec difference vanish.
    */
-  private readonly avatarRight = new THREE.Vector3(1, 0, 0);
-  private readonly avatarUp = new THREE.Vector3(0, 1, 0);
-  private readonly avatarForward = new THREE.Vector3(0, 0, 1);
+  private readonly restUpperLocal: Record<Side, THREE.Vector3> = {
+    left: new THREE.Vector3(1, 0, 0),
+    right: new THREE.Vector3(-1, 0, 0),
+  };
+  private readonly restLowerLocal: Record<Side, THREE.Vector3> = {
+    left: new THREE.Vector3(1, 0, 0),
+    right: new THREE.Vector3(-1, 0, 0),
+  };
+  /** World rest orientation of the hand bone: identity on 1.0, the 180° on 0.x. */
+  private readonly restHandQuat: Record<Side, THREE.Quaternion> = {
+    left: new THREE.Quaternion(),
+    right: new THREE.Quaternion(),
+  };
+  /**
+   * −1 when bone-local X/Z run backwards against world (0.x rigs). Applies to
+   * every rotation written about a local X or Z axis; local-Y writes are immune
+   * because the 180° turn is about Y itself.
+   */
+  private axisFlip = 1;
   private readonly rootQuat = new THREE.Quaternion();
-
 
   applied = 0;
 
@@ -177,12 +196,10 @@ export class HandRig {
     const humanoid = vrm.humanoid;
     if (!humanoid) return;
 
-    // Solve the avatar's basis first — the idle target below is expressed in it.
     vrm.scene.updateWorldMatrix(true, false);
     vrm.scene.getWorldQuaternion(this.rootQuat);
-    this.avatarRight.set(1, 0, 0).applyQuaternion(this.rootQuat).normalize();
-    this.avatarUp.set(0, 1, 0).applyQuaternion(this.rootQuat).normalize();
-    this.avatarForward.set(0, 0, 1).applyQuaternion(this.rootQuat).normalize();
+    this.axisFlip =
+      this.targetDirection.set(0, 0, 1).applyQuaternion(this.rootQuat).z < 0 ? -1 : 1;
 
     for (const side of ['left', 'right'] as Side[]) {
       const prefix = side;
@@ -194,47 +211,66 @@ export class HandRig {
       // Measure the REST pose: zero the local rotations, look, then restore.
       const savedUpper = upper.quaternion.clone();
       const savedLower = lower.quaternion.clone();
+      const savedHand = hand ? hand.quaternion.clone() : null;
       upper.quaternion.identity();
       lower.quaternion.identity();
+      hand?.quaternion.identity();
       upper.updateWorldMatrix(true, true);
 
+      upper.parent?.getWorldQuaternion(this.parentInverse);
+      this.parentInverse.invert();
+
       upper.getWorldPosition(this.shoulderWorld);
+      lower.getWorldPosition(this.elbowWorld);
       (hand ?? lower).getWorldPosition(this.handWorld);
-      this.restDirection.copy(this.handWorld).sub(this.shoulderWorld);
 
-      if (this.restDirection.lengthSq() > 1e-8) {
-        this.restDirection.normalize();
-
-        // Down, with a little clearance so the arm does not clip the torso.
-        // Built from the avatar's own axes, and the outward direction is taken
-        // from where this arm actually rests, so it holds whichever way the
-        // model faces.
-        const outward = Math.sign(this.restDirection.dot(this.avatarRight)) || (side === 'left' ? -1 : 1);
-        this.targetDirection
-          .copy(this.avatarUp)
-          .multiplyScalar(-1)
-          .addScaledVector(this.avatarRight, outward * 0.22)
-          .addScaledVector(this.avatarForward, 0.05)
-          .normalize();
-
-        upper.parent?.getWorldQuaternion(this.parentInverse);
-        this.parentInverse.invert();
-
-        this.scratchQuat.setFromUnitVectors(
-          this.restDirection.applyQuaternion(this.parentInverse).normalize(),
-          this.targetDirection.applyQuaternion(this.parentInverse).normalize(),
-        );
-        this.idleUpper[side].copy(this.scratchQuat);
-      } else {
-        this.idleUpper[side].identity();
+      // Upper-arm segment rest, world → parent-local. THIS is what the IK must
+      // rotate away from; on a 0.x rig it is (−X) for the left arm, not (+X).
+      this.upperDir.copy(this.elbowWorld).sub(this.shoulderWorld);
+      if (this.upperDir.lengthSq() < 1e-8) {
+        this.upperDir.copy(this.handWorld).sub(this.shoulderWorld);
       }
+      this.upperDir.normalize();
+      this.restUpperLocal[side]
+        .copy(this.upperDir)
+        .applyQuaternion(this.parentInverse)
+        .normalize();
 
-      // A straight arm reads as a mannequin; a touch of elbow softens it.
+      // Forearm rest in the upper arm's frame (equal to the parent frame while
+      // the chain is zeroed). A fixed local constant, valid in any later frame.
+      this.forearmDir.copy(this.handWorld).sub(this.elbowWorld);
+      if (this.forearmDir.lengthSq() < 1e-8) this.forearmDir.copy(this.upperDir);
+      this.forearmDir.normalize();
+      this.restLowerLocal[side]
+        .copy(this.forearmDir)
+        .applyQuaternion(this.parentInverse)
+        .normalize();
+
+      // The hand's world rest orientation. The wrist solve composes with this,
+      // so "fingers along +X" means this rig's actual rest fingers.
+      if (hand) hand.getWorldQuaternion(this.restHandQuat[side]);
+      else this.restHandQuat[side].identity();
+
+      // Idle target in WORLD axes — legitimate here, because world anatomy is
+      // the same on both specs: down, slightly outward, a touch forward.
+      this.restDirection.copy(this.handWorld).sub(this.shoulderWorld).normalize();
+      const outward = Math.sign(this.restDirection.x) || (side === 'left' ? 1 : -1);
+      this.targetDirection.set(outward * 0.22, -1, 0.05).normalize();
+
+      this.scratchQuat.setFromUnitVectors(
+        this.restDirection.applyQuaternion(this.parentInverse).normalize(),
+        this.targetDirection.applyQuaternion(this.parentInverse).normalize(),
+      );
+      this.idleUpper[side].copy(this.scratchQuat);
+
+      // A straight arm reads as a mannequin; a touch of elbow softens it. About
+      // local Y, which the 180° turn leaves alone — no flip needed.
       this.scratchEuler.set(0, (side === 'left' ? 1 : -1) * IDLE_ELBOW, 0, 'XYZ');
       this.idleLower[side].setFromEuler(this.scratchEuler);
 
       upper.quaternion.copy(savedUpper);
       lower.quaternion.copy(savedLower);
+      if (hand && savedHand) hand.quaternion.copy(savedHand);
     }
   }
 
@@ -290,7 +326,9 @@ export class HandRig {
     // A completely straight hand looks like a mannequin; real hands rest with a
     // little curl in them.
     for (const finger of FINGERS) {
-      const curlSign = (side === 'left' ? -1 : 1) * (this.config.invertCurl ? -1 : 1);
+      // About local Z, so it follows the same flip as the tracked curl.
+      const curlSign =
+        (side === 'left' ? -1 : 1) * (this.config.invertCurl ? -1 : 1) * this.axisFlip;
       jointNames(side, finger).forEach((joint, depth) => {
         const node = humanoid.getNormalizedBoneNode(joint as VRMHumanBoneName);
         if (!node) return;
@@ -309,6 +347,10 @@ export class HandRig {
     // the right hand points down -X so its sign flips.
     const sideSign = side === 'left' ? -1 : 1;
     const curlSign = sideSign * (this.config.invertCurl ? -1 : 1);
+    // Curl is a rotation about local Z, and a 180° turn about Y negates local Z.
+    // The thumb's opposing swing and the finger fan are about local Y, which the
+    // same turn leaves alone — so the two genuinely cannot share one sign.
+    const curlZ = curlSign * this.axisFlip;
 
     FINGERS.forEach((finger, index) => {
       const raw = pose?.curls[index] ?? 0;
@@ -324,10 +366,10 @@ export class HandRig {
         if (finger === 'Thumb') {
           // The thumb opposes rather than curls into the palm, so it swings about
           // a different axis. Most likely part of this file to need tuning.
-          node.rotation.set(0, curlSign * angle * 0.55, curlSign * angle * 0.45, 'XYZ');
+          node.rotation.set(0, curlSign * angle * 0.55, curlZ * angle * 0.45, 'XYZ');
         } else {
           const fan = pose ? (pose.spread - 0.5) * 0.18 * (index - 2) : 0;
-          node.rotation.set(0, joint === 'proximal' ? fan * weight : 0, curlSign * angle, 'XYZ');
+          node.rotation.set(0, joint === 'proximal' ? fan * weight : 0, curlZ * angle, 'XYZ');
         }
         this.applied++;
       });
@@ -472,12 +514,13 @@ export class HandRig {
       .multiplyScalar(cosShoulder)
       .addScaledVector(this.elbowSide, sinShoulder);
 
-    // Upper arm: world direction into parent space, shortest arc from rest.
+    // Upper arm: world direction into parent space, shortest arc from the
+    // MEASURED rest — not an assumed ±X, which is backwards on a 0.x rig and
+    // negated the entire solve.
     upper.parent?.getWorldQuaternion(this.parentInverse);
     this.parentInverse.invert();
-    this.restDirection.set(sideSign, 0, 0);
     this.scratchQuat.setFromUnitVectors(
-      this.restDirection,
+      this.restDirection.copy(this.restUpperLocal[side]),
       this.targetDirection.copy(this.upperDir).applyQuaternion(this.parentInverse),
     );
     upper.quaternion.slerp(this.scratchQuat, weight);
@@ -498,7 +541,7 @@ export class HandRig {
     upper.getWorldQuaternion(this.worldQuat);
     this.worldQuat.invert();
     this.scratchQuat.setFromUnitVectors(
-      this.restDirection,
+      this.restDirection.copy(this.restLowerLocal[side]),
       this.forearmDir.applyQuaternion(this.worldQuat),
     );
     lower.quaternion.slerp(this.scratchQuat, weight);
@@ -537,8 +580,11 @@ export class HandRig {
     const basis = pose.basis;
     if (!basis) return;
 
-    // `side` is the avatar side; local fingers-axis is +X left hand, -X right.
-    const sideSign = side === 'left' ? 1 : -1;
+    // `side` is the avatar side; local fingers-axis is +X left hand, −X right —
+    // but "local +X" runs backwards on a rig whose scene is turned 180°, so the
+    // anatomical sign has to follow `axisFlip`. The palm axis below is local Y,
+    // which a turn about Y leaves alone, so it must NOT follow.
+    const sideSign = (side === 'left' ? 1 : -1) * this.axisFlip;
 
     this.basisX
       .set(basis.fingers[0] * mirrorSign, -basis.fingers[1], -basis.fingers[2])
