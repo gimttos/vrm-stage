@@ -57,7 +57,6 @@ const config: DriverConfig = driver.config;
 const sceneManager = new SceneManager(stageRoot, sceneEditable(mode));
 
 let avatar: LoadedAvatar | null = null;
-let framing: Framing = (params.get('framing') as Framing) ?? 'bust';
 let source: TrackingSource | null = null;
 let trackingWanted = false;
 
@@ -116,9 +115,10 @@ const panel = new Panel(
       scheduleConfigBroadcast();
     },
     onFramingChange: (next) => {
-      framing = next;
-      if (avatar) stage.frame(avatar.vrm, framing);
-      scheduleConfigBroadcast();
+      // Into the scene, not a local variable: framing is part of the layout the
+      // link has to reproduce. `updateItem` emits, which syncs and broadcasts.
+      const item = sceneManager.avatarItem;
+      if (item) sceneManager.updateItem(item.id, { framing: next });
     },
     onSourceChange: (kind) => {
       sourceKind = kind as SourceKind;
@@ -155,7 +155,10 @@ const panel = new Panel(
       if (wantsBody && sourceKind === 'webcam' && trackingWanted) void restartTracking();
     },
     onResetView: () => {
-      stage.resetView();
+      // Through the scene, or the reset would be undone by the next sync.
+      const item = sceneManager.avatarItem;
+      if (item) sceneManager.updateItem(item.id, { panX: 0, panY: 0, zoom: 1 });
+      else stage.resetView();
       panel.setNotice('시야를 초기화했습니다.');
       scheduleConfigBroadcast();
     },
@@ -192,17 +195,52 @@ const panel = new Panel(
 panel.setTrackingState('off');
 panel.setCreditVisible(creditVisible);
 
-// Ctrl-drag and wheel change the composition; viewers must follow it.
-stage.onViewChange = () => scheduleConfigBroadcast();
+// Ctrl-drag and wheel change the composition, which lives in the avatar row —
+// so the gesture writes back into the scene and travels with the link.
+stage.onViewChange = (view) => {
+  const item = sceneManager.avatarItem;
+  if (item) sceneManager.updateItem(item.id, view);
+};
 
 sceneManager.onSelect = (item) => panel.renderInspector(item);
 sceneManager.onChange = () => {
+  syncAvatar();
   const encoded = sceneManager.serialize();
   emotionChannel?.postMessage({ type: 'scene', encoded });
   // BroadcastChannel only reaches tabs in this browser; the room reaches OBS's
   // separate CEF instance and every remote viewer.
   publisher?.send({ type: 'scene', encoded });
 };
+
+/** The framing mode the camera is currently solved for, to avoid re-framing. */
+let framedAs: Framing | null = null;
+
+/**
+ * Pushes the avatar row onto the Stage: where it draws, how it is cropped, and
+ * the operator's composition inside it.
+ *
+ * The scene is the single source of truth for all three. Everything that can
+ * change them — dragging the grip, the inspector, a preset, an incoming scene
+ * from the host — goes through the scene and arrives here.
+ */
+function syncAvatar(): void {
+  const item = sceneManager.avatarItem;
+  if (!item) return;
+
+  // The scene positions by centre; the Stage takes a top-left corner.
+  stage.setAvatarRect(
+    { x: item.x - item.w / 2, y: item.y - item.h / 2, w: item.w, h: item.h },
+    item.radius,
+  );
+
+  if (avatar && item.framing !== framedAs) {
+    stage.frame(avatar.vrm, item.framing);
+    framedAs = item.framing;
+  }
+
+  stage.setView({ panX: item.panX, panY: item.panY, zoom: item.zoom });
+  panel.setFraming(item.framing);
+}
 
 // Scene load priority: URL hash (self-contained — survives into a real OBS
 // browser source, which is a separate browser sharing no storage with Chrome),
@@ -212,6 +250,8 @@ sceneManager.onChange = () => {
   const fromHash = hashMatch ? SceneManager.parseEncoded(hashMatch[1]!) : null;
   if (fromHash) sceneManager.load(fromHash);
   else sceneManager.loadFromStorage();
+  applyAvatarParams();
+  syncAvatar();
 }
 
 async function copySceneLink(): Promise<void> {
@@ -281,8 +321,10 @@ async function mount(next: LoadedAvatar): Promise<void> {
 
   avatar = next;
   stage.scene.add(next.vrm.scene);
-  stage.frame(next.vrm, framing);
-  applyViewParams();
+  // A new model invalidates the measurement, not the layout: force a re-frame,
+  // then let the scene reapply rect, crop and composition on top.
+  framedAs = null;
+  syncAvatar();
   driver.attach(next.vrm, next.morphs, stage.scene);
 
   panel.setDropzoneVisible(false);
@@ -415,9 +457,19 @@ function applyRoomMessage(raw: string): void {
   }
 }
 
+/**
+ * Adopts a scene that arrived from elsewhere — the host's room, or another tab.
+ *
+ * `load` deliberately does not emit (loading is not editing, and echoing it back
+ * to the host would be a feedback loop), so the sync the emit would have done
+ * has to happen here. Without it a viewer renders the host's overlays at the
+ * host's positions but keeps the avatar full-frame.
+ */
 function loadEncodedScene(encoded: string): void {
   const spec = SceneManager.parseEncoded(encoded);
-  if (spec) sceneManager.load(spec);
+  if (!spec) return;
+  sceneManager.load(spec);
+  syncAvatar();
 }
 
 function loadRoomModel(url: string | null): void {
@@ -466,8 +518,6 @@ function performConfig(): PerformConfig {
     driver: driverConfig,
     hands: handConfig,
     body: bodyConfig,
-    framing,
-    view: stage.getView(),
   };
 }
 
@@ -516,12 +566,9 @@ function applyPerformConfig(incoming: unknown): void {
     }
   }
 
-  if (typeof source.framing === 'string' && ['bust', 'head', 'full'].includes(source.framing)) {
-    framing = source.framing as Framing;
-    if (avatar) stage.frame(avatar.vrm, framing);
-  }
-
-  if (source.view) stage.setView(source.view);
+  // Framing and composition are deliberately absent: they live in the avatar
+  // row, so they arrive with the scene instead. That is the better channel —
+  // the room retains the scene for late joiners, but not the config.
 
   driver.resetFilters();
 }
@@ -656,7 +703,6 @@ async function copyLiveUrl(): Promise<void> {
   const url = new URL(location.href);
   url.search = '';
   url.searchParams.set('mode', 'live');
-  url.searchParams.set('framing', framing);
   url.searchParams.set('source', sourceKind);
   if (modelRef) url.searchParams.set('model', modelRef);
   if (!creditVisible) url.searchParams.set('credit', '0');
@@ -671,12 +717,9 @@ async function copyLiveUrl(): Promise<void> {
   if (config.yawOffset) url.searchParams.set('yaw', config.yawOffset.toFixed(4));
   if (config.rollOffset) url.searchParams.set('roll', config.rollOffset.toFixed(4));
 
-  // Likewise the hand-composed framing: the whole point of Ctrl-dragging the
-  // avatar into place is that the stream shows what was arranged.
-  const view = stage.getView();
-  if (view.panX) url.searchParams.set('px', view.panX.toFixed(4));
-  if (view.panY) url.searchParams.set('py', view.panY.toFixed(4));
-  if (view.zoom !== 1) url.searchParams.set('zoom', view.zoom.toFixed(4));
+  // Framing and the hand-composed view are NOT query params any more — they are
+  // in the avatar row of the scene below, so there is one copy rather than two
+  // that can disagree.
 
   // The scene rides along in the hash so a real OBS browser source — a separate
   // browser with none of our storage — reproduces it from the URL alone.
@@ -714,8 +757,7 @@ if (emotionChannel) {
     } else if (data?.type === 'scene' && typeof data.encoded === 'string') {
       // Live scene edits from the editor tab. load() does not emit, so this
       // cannot echo back and loop.
-      const spec = SceneManager.parseEncoded(data.encoded);
-      if (spec) sceneManager.load(spec);
+      loadEncodedScene(data.encoded);
     }
   };
 }
@@ -898,18 +940,37 @@ function applyCalibrationParams(): void {
 }
 
 /**
- * Restores a composed view from the URL. Applied after `frame()`, which resets
- * the base framing whenever a model or framing mode changes.
+ * Applies the legacy `?framing/px/py/zoom` params over the loaded scene.
+ *
+ * These used to be the only home for composition; now the avatar row owns it.
+ * They are still READ, so links copied before that change still open the way
+ * they were arranged — but they are no longer WRITTEN, so there is exactly one
+ * place a reader has to look, and no way for the hash and the query string to
+ * disagree about framing.
+ *
+ * Patched directly rather than through `updateItem` because this runs during
+ * startup, before there is anything to broadcast to.
  */
-function applyViewParams(): void {
-  const px = Number(params.get('px'));
-  const py = Number(params.get('py'));
-  const zoom = Number(params.get('zoom'));
-  stage.setView({
-    panX: params.get('px') !== null && Number.isFinite(px) ? px : undefined,
-    panY: params.get('py') !== null && Number.isFinite(py) ? py : undefined,
-    zoom: params.get('zoom') !== null && Number.isFinite(zoom) ? zoom : undefined,
-  });
+function applyAvatarParams(): void {
+  const item = sceneManager.avatarItem;
+  if (!item) return;
+
+  const framing = params.get('framing');
+  if (framing === 'bust' || framing === 'head' || framing === 'full') {
+    item.framing = framing;
+  }
+
+  const numbers: [string, 'panX' | 'panY' | 'zoom'][] = [
+    ['px', 'panX'],
+    ['py', 'panY'],
+    ['zoom', 'zoom'],
+  ];
+  for (const [param, key] of numbers) {
+    const raw = params.get(param);
+    if (raw === null) continue;
+    const value = Number(raw);
+    if (Number.isFinite(value) && (key !== 'zoom' || value > 0)) item[key] = value;
+  }
 }
 
 function readStoredCalibration(): Partial<DriverConfig> | null {

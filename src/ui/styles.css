@@ -94,6 +94,17 @@ body.live #scene-edit {
   display: none;
 }
 
+/* The avatar's backing plate. Shares the rect, sits in the back band. */
+.scene-plate {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.scene-plate[hidden] {
+  display: none;
+}
+
 .scene-grip {
   position: absolute;
   transform: translate(-50%, -50%);

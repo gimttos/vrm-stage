@@ -18,7 +18,6 @@ export class Stage {
 
   private readonly timer = new THREE.Timer();
   private readonly container: HTMLElement;
-  private backdrop: THREE.Mesh | null = null;
 
   /** Framing computed from the model, before the user's manual adjustment. */
   private baseHeight = 1.3;
@@ -26,6 +25,21 @@ export class Stage {
 
   /** Manual view adjustment: Ctrl-drag pans, wheel zooms. */
   private readonly view = { panX: 0, panY: 0, zoom: 1 };
+
+  /**
+   * The avatar's rectangle, as top-left + size in percent of the container.
+   * `null` means the whole surface.
+   *
+   * Top-left rather than the scene's centre convention: the caller converts once,
+   * so there is exactly one place where the two conventions meet.
+   */
+  private rectPct: { x: number; y: number; w: number; h: number } | null = null;
+
+  /** The same rectangle in CSS pixels. Recomputed on every resize. */
+  private viewport = { x: 0, y: 0, w: 1, h: 1 };
+
+  /** Corner radius as a percent of the rect's shorter side. */
+  private cornerPct = 0;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -78,7 +92,35 @@ export class Stage {
     return this.timer.getDelta();
   }
 
+  /**
+   * Places the avatar's rectangle, or passes `null` to use the whole surface.
+   *
+   * `radius` is a percent of the rect's shorter side, matching `AvatarItem`.
+   */
+  setAvatarRect(
+    pct: { x: number; y: number; w: number; h: number } | null,
+    radius = 0,
+  ): void {
+    this.rectPct = pct;
+    this.cornerPct = radius;
+    this.resize();
+  }
+
   render(): void {
+    const { x, y, w, h } = this.viewport;
+
+    // gl.clear obeys the scissor box. Clearing with the test enabled would leave
+    // last frame's pixels frozen outside the rect, which shows up the moment the
+    // operator drags the avatar across the stage — so clear unscissored first.
+    this.renderer.setScissorTest(false);
+    this.renderer.clear();
+
+    // WebGL's origin is bottom-left; our rect is measured from the top.
+    const bottom = (this.container.clientHeight || window.innerHeight) - (y + h);
+    this.renderer.setViewport(x, bottom, w, h);
+    this.renderer.setScissor(x, bottom, w, h);
+    this.renderer.setScissorTest(true);
+
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -117,11 +159,41 @@ export class Stage {
     };
 
     const { bottom, fov } = spans[mode];
-    const span = (crown - bottom) * 1.06;
 
-    this.camera.fov = fov;
-    this.baseHeight = (crown + bottom) / 2;
-    this.baseDistance = span / 2 / Math.tan((fov * Math.PI) / 360);
+    // Horizontal extent the subject needs. A bust is roughly shoulder-width;
+    // a full body has to clear the arms.
+    const width = scale * (mode === 'full' ? 1.3 : 1.1);
+
+    this.framed = { crown, bottom, width, fov };
+    this.solveDistance();
+  }
+
+  /** What `frame()` measured from the model, independent of the rect's shape. */
+  private framed: { crown: number; bottom: number; width: number; fov: number } | null = null;
+
+  /**
+   * Turns the measurement into a camera distance for the CURRENT rect.
+   *
+   * Kept apart from `frame()` because the two change for different reasons: the
+   * measurement only when the model or framing mode does, the distance whenever
+   * the rect or the window does. Merging them is what forced callers to re-frame
+   * on resize.
+   */
+  private solveDistance(): void {
+    const f = this.framed;
+    if (!f) return;
+
+    this.camera.fov = f.fov;
+    const half = Math.tan((f.fov * Math.PI) / 360);
+
+    const vertical = ((f.crown - f.bottom) * 1.06) / 2 / half;
+    // The field of view is vertical, so a narrow rect — a 28x40 corner cam is
+    // taller than it is wide — must also be solved horizontally or the shoulders
+    // fall outside it.
+    const horizontal = f.width / 2 / (half * Math.max(0.01, this.camera.aspect));
+
+    this.baseDistance = Math.max(vertical, horizontal);
+    this.baseHeight = (f.crown + f.bottom) / 2;
     this.updateCamera();
   }
 
@@ -178,6 +250,9 @@ export class Stage {
 
     surface.addEventListener('pointerdown', (event) => {
       if (!event.ctrlKey && !event.metaKey) return;
+      // Panning the avatar from outside its rect would move something the
+      // operator is not pointing at.
+      if (!this.hitsViewport(event)) return;
       dragging = true;
       lastX = event.clientX;
       lastY = event.clientY;
@@ -193,7 +268,7 @@ export class Stage {
       const distance = this.baseDistance / this.view.zoom;
       const worldPerPixel =
         (2 * distance * Math.tan((this.camera.fov * Math.PI) / 360)) /
-        Math.max(1, surface.clientHeight);
+        Math.max(1, this.viewport.h);
 
       // The camera moves opposite the cursor so the avatar appears to follow it.
       this.view.panX -= (event.clientX - lastX) * worldPerPixel;
@@ -222,6 +297,7 @@ export class Stage {
         // Scrolling over an overlay is aimed at the overlay, not the camera.
         // Grips are exempt — a grip IS the avatar's stand-in.
         if ((event.target as HTMLElement | null)?.closest?.('.scene-item')) return;
+        if (!this.hitsViewport(event)) return;
         event.preventDefault();
         const factor = Math.exp(-event.deltaY * 0.0015);
         this.view.zoom = Math.min(6, Math.max(0.25, this.view.zoom * factor));
@@ -239,38 +315,65 @@ export class Stage {
 
   private wheelSettle: number | null = null;
 
-  private emitViewChange(): void {
-    this.onViewChange?.(this.getView());
+  /** Is the pointer inside the avatar's rect? */
+  private hitsViewport(event: { clientX: number; clientY: number }): boolean {
+    const box = this.container.getBoundingClientRect();
+    const x = event.clientX - box.left;
+    const y = event.clientY - box.top;
+    const v = this.viewport;
+    return x >= v.x && x <= v.x + v.w && y >= v.y && y <= v.y + v.h;
   }
 
-  /** Sets a flat image backdrop, or clears it when passed null. */
-  async setBackdrop(url: string | null): Promise<void> {
-    if (this.backdrop) {
-      this.scene.remove(this.backdrop);
-      this.backdrop.geometry.dispose();
-      (this.backdrop.material as THREE.Material).dispose();
-      this.backdrop = null;
-    }
-    if (!url) return;
-
-    const texture = await new THREE.TextureLoader().loadAsync(url);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    const aspect = texture.image.width / texture.image.height;
-    const height = 4;
-
-    this.backdrop = new THREE.Mesh(
-      new THREE.PlaneGeometry(height * aspect, height),
-      new THREE.MeshBasicMaterial({ map: texture, depthWrite: false }),
-    );
-    this.backdrop.position.set(0, 1.2, -2.2);
-    this.scene.add(this.backdrop);
+  private emitViewChange(): void {
+    this.onViewChange?.(this.getView());
   }
 
   private resize(): void {
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(width, height, false);
-    this.camera.aspect = width / height;
+
+    const p = this.rectPct;
+    this.viewport = p
+      ? {
+          x: (p.x / 100) * width,
+          y: (p.y / 100) * height,
+          w: Math.max(1, (p.w / 100) * width),
+          h: Math.max(1, (p.h / 100) * height),
+        }
+      : { x: 0, y: 0, w: width, h: height };
+
+    // Aspect comes from the VIEWPORT, not the canvas. Using the canvas would
+    // stretch the avatar by exactly the ratio between the two.
+    this.camera.aspect = this.viewport.w / this.viewport.h;
     this.camera.updateProjectionMatrix();
+    this.solveDistance();
+    this.applyMask();
+  }
+
+  /**
+   * Rounds the rect's corners by clipping the canvas.
+   *
+   * `clip-path` rather than a mask image: one property, no data URI to keep in
+   * sync, and the radius can be given in pixels so the corners stay circular on
+   * a non-square rect (percentages there resolve per-axis and go elliptical).
+   * This works because there is exactly one avatar rect — which is why the
+   * sanitizer caps avatar items at one.
+   */
+  private applyMask(): void {
+    const style = this.renderer.domElement.style;
+    if (!this.rectPct || this.cornerPct <= 0) {
+      style.clipPath = '';
+      return;
+    }
+
+    const { x, y, w, h } = this.viewport;
+    const width = this.container.clientWidth || window.innerWidth;
+    const height = this.container.clientHeight || window.innerHeight;
+    const r = (this.cornerPct / 100) * Math.min(w, h);
+
+    // inset() insets are measured from each edge of the canvas, not from origin.
+    style.clipPath =
+      `inset(${y}px ${width - (x + w)}px ${height - (y + h)}px ${x}px round ${r}px)`;
   }
 }

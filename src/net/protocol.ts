@@ -253,7 +253,12 @@ function readHand(take: () => number): HandPose | null {
  * they never reach the wire. Without shipping them, a viewer decodes the host's
  * face through its own defaults (or worse, through calibration it saved while
  * hosting itself), and the avatar sits at a subtly different angle than the host
- * sees. Framing and view travel for the same reason: composition is the host's.
+ * sees.
+ *
+ * Composition — framing, pan, zoom, and the avatar's rectangle — is NOT here.
+ * It belongs to the avatar row of the scene and travels with it, which is the
+ * better channel: the room retains the scene for late joiners, and there is no
+ * second copy to disagree with the first.
  *
  * Fields are deliberately loose — the viewer copies only keys it recognises
  * rather than trusting the wire.
@@ -263,8 +268,6 @@ export interface PerformConfig {
   hands: Record<string, number | boolean>;
   /** Shoulder and torso settings. Absent from older hosts, hence optional. */
   body?: Record<string, number | boolean>;
-  framing: string;
-  view: { panX: number; panY: number; zoom: number };
 }
 
 /** Low-frequency room state, sent as JSON text so binary stays pose-only. */

@@ -43,6 +43,8 @@ export class SceneManager {
    */
   private readonly bands: { back: HTMLElement; front: HTMLElement; edit: HTMLElement | null };
   private readonly elements = new Map<string, HTMLElement>();
+  /** The avatar's backing plate, kept apart because `elements` holds its grip. */
+  private readonly plates = new Map<string, HTMLElement>();
   private selectedId: string | null = null;
 
   /** Fired after any user-visible change; wired to broadcast + notices. */
@@ -155,11 +157,23 @@ export class SceneManager {
     }
   }
 
-  /** Empty means "nothing to share" — the avatar row alone does not count. */
+  /**
+   * Empty means "nothing to share".
+   *
+   * A default avatar row does not count — it is what a scene-less app already
+   * shows. A MOVED one does: the avatar now carries the rect, framing and
+   * composition, so treating it as nothing would drop the operator's whole
+   * layout from the copied link.
+   */
   get isEmpty(): boolean {
-    return (
-      this.spec.items.every((item) => item.kind === 'avatar') &&
-      this.spec.background.type === 'none'
+    if (this.spec.background.type !== 'none') return false;
+    const defaults = fullFrameAvatar();
+    return this.spec.items.every(
+      (item) =>
+        item.kind === 'avatar' &&
+        (Object.keys(defaults) as (keyof AvatarItem)[]).every(
+          (key) => key === 'id' || item[key] === defaults[key],
+        ),
     );
   }
 
@@ -221,12 +235,16 @@ export class SceneManager {
     if (!item) return;
 
     const movedBand = 'band' in patch && patch.band !== (item as { band?: string }).band;
+    // A plate appearing or vanishing adds or removes a node, which styling
+    // cannot do.
+    const platedChanged =
+      item.kind === 'avatar' && 'plate' in patch && (patch.plate === null) !== (item.plate === null);
     Object.assign(item, patch);
 
     // Moving between bands means moving the node, and reordering means redoing
     // the sequence. At 60 items a full re-render is free and keeps "later item
     // on top" honest without bookkeeping.
-    if (movedBand) {
+    if (movedBand || platedChanged) {
       this.renderAll();
     } else {
       const el = this.elements.get(id);
@@ -267,6 +285,7 @@ export class SceneManager {
     this.bands.front.innerHTML = '';
     if (this.bands.edit) this.bands.edit.innerHTML = '';
     this.elements.clear();
+    this.plates.clear();
     this.applyBackground();
     for (const item of this.spec.items) this.renderItem(item);
   }
@@ -276,6 +295,7 @@ export class SceneManager {
     // be selectable and draggable, so it gets a grip in the edit band and nothing
     // else — the rect itself is handed to Stage by main.ts.
     if (item.kind === 'avatar') {
+      this.renderAvatarPlate(item);
       this.renderAvatarGrip(item);
       return;
     }
@@ -306,6 +326,25 @@ export class SceneManager {
    * hit-tested against its rect by the stage-level handler, which runs only
    * after the real items have declined the click.
    */
+  /**
+   * The avatar's backing plate: a flat fill drawn inside its rect only.
+   *
+   * A DOM div in the back band, not a WebGL clear colour — the band machinery
+   * already positions and rounds rectangles, and a clear colour would fill the
+   * whole canvas rather than the rect.
+   */
+  private renderAvatarPlate(item: AvatarItem): void {
+    if (item.plate === null) return;
+    const plate = document.createElement('div');
+    plate.className = 'scene-plate';
+    plate.hidden = item.hidden === true;
+    plate.style.background = item.plate;
+    plate.style.borderRadius = `${item.radius}%`;
+    this.styleItem(plate, item);
+    this.bands.back.appendChild(plate);
+    this.plates.set(item.id, plate);
+  }
+
   private renderAvatarGrip(item: AvatarItem): void {
     if (!this.bands.edit) return;
     const grip = document.createElement('div');
@@ -334,6 +373,18 @@ export class SceneManager {
     if (item.kind === 'avatar') {
       el.style.width = `${item.w}%`;
       el.style.height = `${item.h}%`;
+      // The plate shares the rect, so it follows the same styling pass rather
+      // than needing every caller to remember it.
+      const plate = this.plates.get(item.id);
+      if (plate && plate !== el) {
+        plate.style.left = el.style.left;
+        plate.style.top = el.style.top;
+        plate.style.width = el.style.width;
+        plate.style.height = el.style.height;
+        plate.style.borderRadius = `${item.radius}%`;
+        if (item.plate !== null) plate.style.background = item.plate;
+        plate.hidden = item.hidden === true;
+      }
       return;
     }
 

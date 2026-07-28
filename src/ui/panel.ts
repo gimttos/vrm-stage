@@ -207,21 +207,29 @@ export class Panel {
     return el('div', 'footer', [chips]);
   }
 
+  /** The framing control, kept so an incoming scene can move it. */
+  private framingSelect: HTMLSelectElement | null = null;
+
+  /** Reflects the scene's framing, which a shared link can set. */
+  setFraming(framing: Framing): void {
+    if (this.framingSelect) this.framingSelect.value = framing;
+  }
+
   private avatarTab(): HTMLElement {
+    const framing = select(
+      [
+        ['bust', '흉상'],
+        ['head', '얼굴'],
+        ['full', '전신'],
+      ],
+      'bust',
+      (value) => this.callbacks.onFramingChange(value as Framing),
+    );
+    this.framingSelect = framing as HTMLSelectElement;
+
     return el('div', '', [
       row([button('VRM 열기', 'wide', () => this.callbacks.onPickFile())]),
-      row([
-        label('프레이밍'),
-        select(
-          [
-            ['bust', '흉상'],
-            ['head', '얼굴'],
-            ['full', '전신'],
-          ],
-          'bust',
-          (value) => this.callbacks.onFramingChange(value as Framing),
-        ),
-      ]),
+      row([label('프레이밍'), framing]),
       row([button('시야 초기화', 'wide', () => this.callbacks.onResetView())]),
       el('p', 'hint', ['Ctrl + 드래그로 위치 이동, 휠로 확대·축소.']),
     ]);
