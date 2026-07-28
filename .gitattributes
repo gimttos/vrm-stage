@@ -1,0 +1,5 @@
+# Normalise line endings so a Windows checkout does not show every file as
+# modified, and so the bridge scripts stay LF for anyone running them on Linux.
+* text=auto eol=lf
+*.vrm binary
+*.task binary

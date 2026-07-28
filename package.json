@@ -1,0 +1,37 @@
+{
+  "name": "vrm-stage",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Upload a VRM, get a broadcast scene. One OBS browser-source URL, shareable scenes, bring your own tracker.",
+  "scripts": {
+    "models": "node scripts/fetch-models.mjs",
+    "predev": "npm run models",
+    "dev": "vite",
+    "prebuild": "npm run models",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "serve": "wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json && tsc -p tsconfig.worker.json",
+    "bridge": "node bridge/vmc-bridge.mjs",
+    "bridge:verbose": "node bridge/vmc-bridge.mjs --verbose",
+    "bridge:test": "node bridge/vmc-test-sender.mjs",
+    "room:test": "node scripts/room-test.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.35",
+    "@pixiv/three-vrm": "^3.5.5",
+    "three": "^0.185.1",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260728.1",
+    "@types/node": "^26.1.2",
+    "@types/three": "^0.185.1",
+    "@types/ws": "^8.18.1",
+    "typescript": "~5.9.3",
+    "vite": "^6.3.6",
+    "wrangler": "^4.114.0"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "//": [
+    "Everything that runs in Node rather than the browser: the Vite config, the",
+    "model fetcher, and the VMC bridge. Kept separate from tsconfig.json so DOM",
+    "code cannot reach for Node globals and vice versa.",
+    "",
+    "The bridge and scripts are plain .mjs, so checkJs is what gives them any",
+    "checking at all — before this they were covered by nothing.",
+    "",
+    "Deliberately not strict: demanding JSDoc annotations on a hand-rolled OSC",
+    "decoder would block builds on inference noise rather than defects. checkJs",
+    "without noImplicitAny still catches what matters here — unresolved modules,",
+    "wrong arity, misspelled properties, misused Node APIs."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node"]
+  },
+  "include": ["vite.config.ts", "scripts/**/*.mjs", "bridge/**/*.mjs"]
+}

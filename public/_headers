@@ -1,0 +1,23 @@
+# Cloudflare Pages / Netlify header rules.
+#
+# Deliberately NO COOP/COEP. MediaPipe tasks-vision runs single-threaded WASM on
+# the GPU delegate and never needs SharedArrayBuffer, while COEP would break the
+# ?mp=cdn debugging escape hatch and every third-party overlay iframe we plan to
+# embed later. Cross-origin isolation would be cost with no benefit here.
+
+/mediapipe/*
+  # Content-addressed by SHA-256 pin and versioned with the dependency, so a
+  # stale cache is not a risk worth a revalidation round-trip per launch.
+  Cache-Control: public, max-age=31536000, immutable
+  X-Content-Type-Options: nosniff
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  X-Content-Type-Options: nosniff
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  # These are ALLOW rules, not denials: the app needs the camera for tracking,
+  # and display-capture/microphone are what the recording work will use.
+  Permissions-Policy: camera=(self), microphone=(self), display-capture=(self)

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+.vite/
+.wrangler/
+
+# Author-licensed regression models (author-only, non-commercial, no-modify).
+# Served in dev by the `vrm-stage:dev-fixtures` plugin; never committed, never shipped.
+fixtures/
+
+# Fetched by scripts/fetch-models.mjs and pinned by SHA-256 there.
+public/mediapipe/models/

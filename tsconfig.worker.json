@@ -1,0 +1,23 @@
+{
+  "//": [
+    "The Cloudflare Worker: room Durable Object plus the model store.",
+    "Separate from tsconfig.json because Worker globals (DurableObjectNamespace,",
+    "R2Bucket, WebSocketPair) and DOM globals are different runtimes that must",
+    "not leak into each other."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["worker"]
+}
