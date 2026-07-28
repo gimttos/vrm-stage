@@ -70,8 +70,7 @@ const FINGERS: Finger[] = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'];
  * torso, plus a small elbow bend and finger curl so the limb looks relaxed
  * rather than rigid.
  */
-const IDLE_ARM_DEG = 72;
-const IDLE_ELBOW_DEG = 9;
+const IDLE_ELBOW = (9 * Math.PI) / 180;
 const IDLE_CURL = 0.18;
 
 const JOINT_LIMITS: Record<'proximal' | 'intermediate' | 'distal', number> = {
@@ -114,28 +113,24 @@ export class HandRig {
   private readonly idleFinger = new THREE.Quaternion();
 
   /**
-   * Arms-down target per side, built once.
+   * Arms-down target per side, DERIVED from the loaded rig by {@link prepareIdle}.
    *
-   * The left arm's limb axis is +X and the right's is −X, so swinging both down
-   * toward −Y takes opposite signs about Z.
+   * These were once hardcoded to ∓72° about Z, which is correct only if the
+   * model's rest pose and axis orientation match VRM 1.0's. On a VRM 0.x model —
+   * which `rotateVRM0` turns 180° — the identical rotation raised the arms into a
+   * permanent cheer instead of lowering them. Rest geometry varies; "point the
+   * limb downward" does not, so that is what gets solved for.
    */
   private readonly idleUpper: Record<Side, THREE.Quaternion> = {
-    left: new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, (-IDLE_ARM_DEG * Math.PI) / 180, 'XYZ'),
-    ),
-    right: new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, 0, (IDLE_ARM_DEG * Math.PI) / 180, 'XYZ'),
-    ),
+    left: new THREE.Quaternion(),
+    right: new THREE.Quaternion(),
   };
 
   private readonly idleLower: Record<Side, THREE.Quaternion> = {
-    left: new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, (IDLE_ELBOW_DEG * Math.PI) / 180, 0, 'XYZ'),
-    ),
-    right: new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, (-IDLE_ELBOW_DEG * Math.PI) / 180, 0, 'XYZ'),
-    ),
+    left: new THREE.Quaternion(),
+    right: new THREE.Quaternion(),
   };
+
   private readonly shoulderWorld = new THREE.Vector3();
   private readonly handWorld = new THREE.Vector3();
   private readonly headWorld = new THREE.Vector3();
@@ -152,6 +147,66 @@ export class HandRig {
   private readonly basisMatrix = new THREE.Matrix4();
 
   applied = 0;
+
+  /**
+   * Solves the idle pose against this particular rig. Call once per model.
+   *
+   * Measures where each arm actually points at rest, then computes the rotation
+   * that swings it down and slightly outward. Because the answer comes from the
+   * rig itself, it is right for VRM 0.x and 1.0, for tall models and chibi ones,
+   * and for any rest pose — none of which a fixed angle can be.
+   */
+  prepareIdle(vrm: VRM): void {
+    const humanoid = vrm.humanoid;
+    if (!humanoid) return;
+
+    for (const side of ['left', 'right'] as Side[]) {
+      const prefix = side;
+      const upper = humanoid.getNormalizedBoneNode(`${prefix}UpperArm` as VRMHumanBoneName);
+      const lower = humanoid.getNormalizedBoneNode(`${prefix}LowerArm` as VRMHumanBoneName);
+      const hand = humanoid.getNormalizedBoneNode(`${prefix}Hand` as VRMHumanBoneName);
+      if (!upper || !lower) continue;
+
+      // Measure the REST pose: zero the local rotations, look, then restore.
+      const savedUpper = upper.quaternion.clone();
+      const savedLower = lower.quaternion.clone();
+      upper.quaternion.identity();
+      lower.quaternion.identity();
+      upper.updateWorldMatrix(true, true);
+
+      upper.getWorldPosition(this.shoulderWorld);
+      (hand ?? lower).getWorldPosition(this.handWorld);
+      this.restDirection.copy(this.handWorld).sub(this.shoulderWorld);
+
+      if (this.restDirection.lengthSq() > 1e-8) {
+        this.restDirection.normalize();
+
+        // Down, with a little clearance so the arm does not clip the torso. The
+        // outward component follows the arm's own resting side, so this works
+        // whichever way the model happens to face.
+        const outward = Math.sign(this.restDirection.x) || (side === 'left' ? 1 : -1);
+        this.targetDirection.set(outward * 0.22, -1, 0.05).normalize();
+
+        upper.parent?.getWorldQuaternion(this.parentInverse);
+        this.parentInverse.invert();
+
+        this.scratchQuat.setFromUnitVectors(
+          this.restDirection.applyQuaternion(this.parentInverse).normalize(),
+          this.targetDirection.applyQuaternion(this.parentInverse).normalize(),
+        );
+        this.idleUpper[side].copy(this.scratchQuat);
+      } else {
+        this.idleUpper[side].identity();
+      }
+
+      // A straight arm reads as a mannequin; a touch of elbow softens it.
+      this.scratchEuler.set(0, (side === 'left' ? 1 : -1) * IDLE_ELBOW, 0, 'XYZ');
+      this.idleLower[side].setFromEuler(this.scratchEuler);
+
+      upper.quaternion.copy(savedUpper);
+      lower.quaternion.copy(savedLower);
+    }
+  }
 
   /**
    * Call before `vrm.update()`, like the rest of the bone writes.
@@ -185,11 +240,9 @@ export class HandRig {
   /**
    * Eases one side's arm and fingers to the idle pose: arms down at the sides.
    *
-   * Not the rig's rest pose — VRM 1.0 mandates a T-pose, which reads as a
-   * scarecrow the moment hands leave frame. The target is built once per side
-   * from {@link IDLE_ARM_DEG}: rotating about Z swings the limb axis (+X for the
-   * left arm, −X for the right) down toward −Y, so the two sides take opposite
-   * signs.
+   * Not the rig's rest pose — VRM mandates a T-pose, which reads as a scarecrow
+   * the moment hands leave frame. The target is solved per model by
+   * {@link prepareIdle} rather than assumed.
    */
   private relax(vrm: VRM, side: Side): void {
     const humanoid = vrm.humanoid;

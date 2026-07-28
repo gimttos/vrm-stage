@@ -178,6 +178,9 @@ export class AvatarDriver {
       vrm.lookAt.autoUpdate = true;
     }
 
+    // The idle arm pose depends on this rig's rest geometry, not on a constant.
+    this.hands.prepareIdle(vrm);
+
     this.browUpMorphs = morphs.find('BRW_Surprised');
     this.browDownMorphs = morphs.find('BRW_Angry');
     this.debugState.browMorphs = this.browUpMorphs.length + this.browDownMorphs.length;
