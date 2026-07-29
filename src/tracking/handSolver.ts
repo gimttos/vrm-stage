@@ -43,15 +43,29 @@ const CHAINS: [number, number, number, number][] = [
 const STRAIGHT_DEG = 10;
 const CURLED_DEG = 95;
 
+/**
+ * The thumb's own band. It is NOT a finger.
+ *
+ * Measured across the same chain, a closed fist bends the thumb's MCP and IP to
+ * roughly 40-55° between them, nowhere near the 95° a PIP reaches. Scoring it on
+ * the finger band capped a real fist near 0.45 curl, and the rig then halves the
+ * thumb again — so the thumb moved about a fifth as far as the fingers beside
+ * it, which reads as not moving at all.
+ */
+const THUMB_STRAIGHT_DEG = 8;
+const THUMB_CURLED_DEG = 55;
+
 export function solveHand(world: Point[], screen: Point[]): HandPose | null {
   if (world.length < 21 || screen.length < 21) return null;
 
-  const curls = CHAINS.map(([a, b, c, d]) => {
+  const curls = CHAINS.map(([a, b, c, d], finger) => {
     // Two joints per finger, averaged: one alone is noisy, and the distal joint
     // barely moves independently on most hands anyway.
     const proximal = angleAt(world[a]!, world[b]!, world[c]!);
     const distal = angleAt(world[b]!, world[c]!, world[d]!);
-    return clamp01(((proximal + distal) / 2 - STRAIGHT_DEG) / (CURLED_DEG - STRAIGHT_DEG));
+    const straight = finger === 0 ? THUMB_STRAIGHT_DEG : STRAIGHT_DEG;
+    const curled = finger === 0 ? THUMB_CURLED_DEG : CURLED_DEG;
+    return clamp01(((proximal + distal) / 2 - straight) / (curled - straight));
   }) as [number, number, number, number, number];
 
   // Fan measured across the knuckles, normalised by palm width so it does not

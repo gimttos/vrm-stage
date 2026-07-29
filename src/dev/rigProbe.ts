@@ -38,6 +38,9 @@ const BASELINE: Record<string, number> = {
   armY: 0.309,
   armZ: 0.414,
   fistShortens: 0.048,
+  // Negative = the thumb tip ends up closer to the palm knuckle. Added
+  // 2026-07-29, when it measured +0.050 and the thumb was bending backwards.
+  thumbClosesToPalm: -0.051,
   idleBelowHead: 0.55,
 };
 
@@ -162,6 +165,24 @@ async function measure(url: string): Promise<{ spec: string; values: Metrics }> 
   const fistTip = world('leftIndexDistal').distanceTo(palm);
   drive({ hands: { left: hand(0, 0, 0.62, [0, 0, 0, 0, 0]), right: null } });
   values['fistShortens'] = round(world('leftIndexDistal').distanceTo(palm) - fistTip);
+
+  /*
+   * The thumb, measured against the palm knuckle rather than the wrist.
+   *
+   * This is the check that was missing. `fistShortens` watches the index finger,
+   * so a thumb bending the wrong way passed it every single time. Curling used
+   * to push the thumb AWAY from the palm on BOTH fixtures (+0.050); the reports
+   * of a thumb that did nothing and a thumb that bent backwards were the same
+   * bug seen at different curl magnitudes.
+   *
+   * The sign is the assertion. The magnitude is fixture proportions, but "curling
+   * brings the thumb toward the palm" is anatomy and holds on any rig.
+   */
+  const knuckle = world('leftMiddleProximal');
+  drive({ hands: { left: hand(0, 0, 0.62, [1, 1, 1, 1, 1]), right: null } });
+  const thumbShut = world('leftThumbDistal').distanceTo(knuckle);
+  drive({ hands: { left: hand(0, 0, 0.62, [0, 0, 0, 0, 0]), right: null } });
+  values['thumbClosesToPalm'] = round(thumbShut - world('leftThumbDistal').distanceTo(knuckle));
 
   // ---- idle: untracked arms hang below the head, not in a T-pose ----
   drive({ hands: { left: null, right: null } }, 500);

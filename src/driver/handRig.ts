@@ -73,6 +73,14 @@ const FINGERS: Finger[] = ['Thumb', 'Index', 'Middle', 'Ring', 'Little'];
 const IDLE_ELBOW = (9 * Math.PI) / 180;
 const IDLE_CURL = 0.18;
 
+/**
+ * The thumb's share of a finger's joint limit.
+ *
+ * A thumb sweeps far less than a curling finger, and its three joints are
+ * shorter, so the full finger limit folds it into the palm.
+ */
+const THUMB_GAIN = 0.75;
+
 const JOINT_LIMITS: Record<'proximal' | 'intermediate' | 'distal', number> = {
   proximal: 1.15,
   intermediate: 1.4,
@@ -169,6 +177,35 @@ export class HandRig {
     left: new THREE.Vector3(1, 0, 0),
     right: new THREE.Vector3(-1, 0, 0),
   };
+  /**
+   * The thumb's curl axis per joint, in that joint's local frame, measured from
+   * the rig by {@link prepareIdle}.
+   *
+   * The thumb was the one finger still driven by asserted axes — a blend of
+   * local Y and Z with hand-picked weights, carrying a comment admitting it was
+   * the most likely thing in the file to need tuning. It was wrong: measured on
+   * both fixtures, curling moved the thumb tip AWAY from the palm (+0.050)
+   * while every other finger moved toward it (−0.011). Users saw either a thumb
+   * that barely moved or one that bent backwards.
+   *
+   * No sign fixes that, because there is no sign to fix — a thumb's rest
+   * orientation is authoring-tool-dependent and the spec constrains it far less
+   * than it constrains the other fingers. What IS invariant is the anatomy:
+   * curling brings the thumb toward the palm. So the axis is solved for, from
+   * the rig's own rest geometry, exactly as the arms already are.
+   */
+  private readonly thumbCurlAxis: Record<Side, THREE.Vector3[]> = {
+    left: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()],
+    right: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()],
+  };
+  private thumbAxisReady = false;
+  private readonly thumbAlong = new THREE.Vector3();
+  private readonly thumbToPalm = new THREE.Vector3();
+  private readonly thumbPerp = new THREE.Vector3();
+  private readonly thumbAxisWorld = new THREE.Vector3();
+  private readonly thumbJointQuat = new THREE.Quaternion();
+  private readonly curlQuat = new THREE.Quaternion();
+
   /** World rest orientation of the hand bone: identity on 1.0, the 180° on 0.x. */
   private readonly restHandQuat: Record<Side, THREE.Quaternion> = {
     left: new THREE.Quaternion(),
@@ -272,6 +309,76 @@ export class HandRig {
       lower.quaternion.copy(savedLower);
       if (hand && savedHand) hand.quaternion.copy(savedHand);
     }
+
+    this.measureThumbAxes(vrm);
+  }
+
+  /**
+   * Solves each thumb joint's curl axis from the rig's rest geometry.
+   *
+   * The one anatomical invariant: curling swings the thumb toward the palm. Take
+   * the thumb's rest direction and the direction to the palm, drop the component
+   * along the thumb, and the axis that carries one into the other is their cross
+   * product. Rotating by a positive angle about it then moves the tip toward the
+   * palm on any rig, whatever local frame the exporter chose.
+   */
+  private measureThumbAxes(vrm: VRM): void {
+    const humanoid = vrm.humanoid;
+    this.thumbAxisReady = false;
+    if (!humanoid) return;
+
+    for (const side of ['left', 'right'] as Side[]) {
+      const names = jointNames(side, 'Thumb');
+      const nodes = names.map((name) =>
+        humanoid.getNormalizedBoneNode(name as VRMHumanBoneName),
+      );
+      // The palm reference. Middle proximal is the steadiest knuckle, and it is
+      // the same landmark the solver calls the palm centre.
+      const palm =
+        humanoid.getNormalizedBoneNode(`${side}MiddleProximal` as VRMHumanBoneName) ??
+        humanoid.getNormalizedBoneNode(`${side}IndexProximal` as VRMHumanBoneName);
+      if (!nodes[0] || !nodes[2] || !palm) return;
+
+      // Measure the REST pose, like the arms above: zero, look, restore.
+      const saved = nodes.map((node) => node?.quaternion.clone() ?? null);
+      for (const node of nodes) node?.quaternion.identity();
+      nodes[0].updateWorldMatrix(true, true);
+
+      nodes[0].getWorldPosition(this.shoulderWorld);
+      nodes[2].getWorldPosition(this.handWorld);
+      palm.getWorldPosition(this.elbowWorld);
+
+      this.thumbAlong.copy(this.handWorld).sub(this.shoulderWorld);
+      this.thumbToPalm.copy(this.elbowWorld).sub(this.shoulderWorld);
+
+      if (this.thumbAlong.lengthSq() > 1e-10 && this.thumbToPalm.lengthSq() > 1e-10) {
+        this.thumbAlong.normalize();
+        // Only the part of "toward the palm" that the thumb can actually swing to.
+        this.thumbPerp
+          .copy(this.thumbToPalm)
+          .addScaledVector(this.thumbAlong, -this.thumbToPalm.dot(this.thumbAlong));
+
+        if (this.thumbPerp.lengthSq() > 1e-10) {
+          this.thumbPerp.normalize();
+          this.thumbAxisWorld.crossVectors(this.thumbAlong, this.thumbPerp).normalize();
+
+          nodes.forEach((node, depth) => {
+            if (!node) return;
+            node.getWorldQuaternion(this.thumbJointQuat);
+            this.thumbCurlAxis[side][depth]!
+              .copy(this.thumbAxisWorld)
+              .applyQuaternion(this.thumbJointQuat.invert())
+              .normalize();
+          });
+          this.thumbAxisReady = true;
+        }
+      }
+
+      nodes.forEach((node, i) => {
+        const previous = saved[i];
+        if (node && previous) node.quaternion.copy(previous);
+      });
+    }
   }
 
   /**
@@ -364,9 +471,19 @@ export class HandRig {
         const angle = curl * JOINT_LIMITS[joint];
 
         if (finger === 'Thumb') {
-          // The thumb opposes rather than curls into the palm, so it swings about
-          // a different axis. Most likely part of this file to need tuning.
-          node.rotation.set(0, curlSign * angle * 0.55, curlZ * angle * 0.45, 'XYZ');
+          const axis = this.thumbAxisReady ? this.thumbCurlAxis[side][depth] : null;
+          if (axis) {
+            // Measured axis, so no sign and no spec special-case: positive angle
+            // always swings toward this rig's own palm. `invertCurl` stays as the
+            // operator's escape hatch.
+            const sign = this.config.invertCurl ? -1 : 1;
+            this.curlQuat.setFromAxisAngle(axis, sign * angle * THUMB_GAIN);
+            node.quaternion.copy(this.curlQuat);
+          } else {
+            // Degenerate rig (no palm bone, or a zero-length thumb). Better a
+            // small motion on a guessed axis than a thumb frozen straight.
+            node.rotation.set(0, curlSign * angle * 0.55, curlZ * angle * 0.45, 'XYZ');
+          }
         } else {
           const fan = pose ? (pose.spread - 0.5) * 0.18 * (index - 2) : 0;
           node.rotation.set(0, joint === 'proximal' ? fan * weight : 0, curlZ * angle, 'XYZ');
