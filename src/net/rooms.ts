@@ -21,8 +21,20 @@ export interface RoomCredentials {
 
 const STORAGE_KEY = 'vrm-stage:room';
 
+/**
+ * Deadlines. A `fetch` with no signal waits on the browser's own timeout, which
+ * is minutes — long enough that a stalled request is indistinguishable from a
+ * hung app, and the room UI has exactly one notice to say so with.
+ */
+const API_TIMEOUT_MS = 10_000;
+/** Uploads carry ~15MB, so they get their own, much longer budget. */
+const UPLOAD_TIMEOUT_MS = 120_000;
+
 export async function createRoom(): Promise<RoomCredentials> {
-  const response = await fetch(`${basePath()}api/rooms`, { method: 'POST' });
+  const response = await fetch(`${basePath()}api/rooms`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`방을 만들 수 없습니다 (HTTP ${response.status})`);
 
   const body = (await response.json()) as Partial<RoomCredentials>;
@@ -43,6 +55,7 @@ export async function uploadModel(name: string, bytes: ArrayBuffer): Promise<str
     method: 'PUT',
     body: bytes,
     headers: { 'Content-Type': 'model/gltf-binary' },
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`모델 업로드 실패 (HTTP ${response.status})`);
 
@@ -61,7 +74,10 @@ export async function endBroadcast(credentials: RoomCredentials): Promise<void> 
   const url = new URL(`${basePath()}api/rooms/${credentials.roomId}/end`, location.href);
   url.searchParams.set('key', credentials.hostKey);
 
-  const response = await fetch(url, { method: 'POST' });
+  const response = await fetch(url, {
+    method: 'POST',
+    signal: AbortSignal.timeout(API_TIMEOUT_MS),
+  });
   if (!response.ok) throw new Error(`방송 종료 처리 실패 (HTTP ${response.status})`);
 }
 

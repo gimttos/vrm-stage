@@ -608,38 +608,91 @@ function scheduleConfigBroadcast(): void {
 async function startBroadcast(): Promise<void> {
   try {
     panel.showError(null);
-    panel.setNotice('방을 만들고 있습니다…');
 
-    const credentials = room ?? (await createRoom());
+    // Stored credentials are reused so a reload keeps hostship instead of
+    // orphaning viewers. But a room the server no longer has refuses the
+    // upgrade, and retrying that forever would strand the operator on a room
+    // only this browser believes in — so a stored room gets exactly one chance,
+    // then a fresh one is minted.
+    let credentials = room;
+    if (credentials) {
+      panel.setNotice('저장된 방에 연결하는 중…');
+      try {
+        await connectRoom(credentials);
+      } catch {
+        panel.setNotice('저장된 방이 만료되었습니다. 새 방을 만듭니다…');
+        storeRoom(null);
+        room = null;
+        credentials = null;
+      }
+    }
+
+    if (!credentials) {
+      panel.setNotice('방을 만들고 있습니다…');
+      credentials = await createRoom();
+      panel.setNotice('방에 연결하는 중…');
+      await connectRoom(credentials);
+    }
+
     room = credentials;
     storeRoom(credentials);
 
-    publisher = new RoomPublisher(credentials.roomId, credentials.hostKey);
-    publisher.onViewers = (count) => panel.setViewers(count);
-    publisher.onClose = (reason) => {
-      publisher = null;
-      panel.setRoom(null, 0);
-      panel.showError(reason);
-    };
-    await publisher.start();
-
     // Settings first: viewers decode uncorrected frames, so without these the
     // avatar sits at a different angle than the host sees.
-    publisher.send({ type: 'config', config: performConfig() });
+    publisher!.send({ type: 'config', config: performConfig() });
 
+    panel.setNotice('모델을 올리는 중… (최대 15MB)');
     const modelUrl = await ensureModelPublished();
-    if (modelUrl) publisher.send({ type: 'model', url: modelUrl });
+    if (modelUrl) publisher!.send({ type: 'model', url: modelUrl });
     if (!sceneManager.isEmpty) {
-      publisher.send({ type: 'scene', encoded: sceneManager.serialize() });
+      publisher!.send({ type: 'scene', encoded: sceneManager.serialize() });
     }
 
-    panel.setRoom(credentials.roomId, publisher.viewers);
+    panel.setRoom(credentials.roomId, publisher!.viewers);
     panel.setNotice('방송 중입니다. 시청 링크를 복사해 OBS와 시청자에게 쓰세요.');
   } catch (error) {
+    publisher?.stop();
     publisher = null;
     panel.setRoom(null, 0);
+    panel.setNotice('');
     panel.showError(`방송을 시작할 수 없습니다 — ${describe(error)}`);
   }
+}
+
+/**
+ * Rejects if a promise has not settled in time.
+ *
+ * For waits that have no deadline of their own. Every step of starting a
+ * broadcast now has one, because a step that can hang forever shows the same
+ * frozen notice whatever went wrong.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} (${ms / 1000}초 초과)`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+/** Opens the publisher socket for these credentials, or throws. */
+async function connectRoom(credentials: RoomCredentials): Promise<void> {
+  const next = new RoomPublisher(credentials.roomId, credentials.hostKey);
+  next.onViewers = (count) => panel.setViewers(count);
+  next.onClose = (reason) => {
+    publisher = null;
+    panel.setRoom(null, 0);
+    panel.showError(reason);
+  };
+  await next.start();
+  publisher = next;
 }
 
 async function stopBroadcast(): Promise<void> {
@@ -674,7 +727,16 @@ async function ensureModelPublished(): Promise<string | null> {
   // A host-provided URL is already reachable and is not ours to delete later.
   if (modelRef && !modelRef.startsWith('idb:')) return modelRef;
 
-  const stored = await getModel(IDB_KEY);
+  // IndexedDB is the last unbounded wait in this path: a read can block behind
+  // another tab holding the database — the OBS source is exactly such a tab —
+  // and a blocked request never settles at all. Broadcasting without the model
+  // beats not broadcasting; viewers just have to load it themselves.
+  const stored = await withTimeout(getModel(IDB_KEY), 8_000, '저장된 모델을 읽지 못했습니다').catch(
+    (error: unknown) => {
+      console.warn('[vrm-stage] model read failed', error);
+      return null;
+    },
+  );
   if (!stored) return null;
 
   panel.setNotice('시청자가 받을 모델을 올리는 중…');

@@ -10,6 +10,9 @@ import type { PoseFrame } from '../types';
 /** A partial batch is flushed after this long so motion never stalls waiting to fill. */
 const MAX_BATCH_AGE_MS = 120;
 
+/** How long to wait for the upgrade before calling it dead. */
+const CONNECT_TIMEOUT_MS = 10_000;
+
 /**
  * The host side of a broadcast: turns local PoseFrames into room traffic.
  *
@@ -43,22 +46,56 @@ export class RoomPublisher {
     return this.socket?.readyState === WebSocket.OPEN;
   }
 
+  /**
+   * Opens the publisher socket.
+   *
+   * Every exit is covered, which it was not: `onclose` used to do nothing when
+   * the socket closed BEFORE opening, and a refused upgrade — a stale room id, a
+   * wrong host key, a Worker that never deployed — fires exactly that, often
+   * with no `onerror` at all. The promise then never settled and the UI sat on
+   * "방을 만들고 있습니다…" forever with nothing logged. A socket left in
+   * CONNECTING did the same, so there is a deadline too.
+   */
   async start(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(roomSocketUrl(this.roomId, this.hostKey));
       let opened = false;
+      let settled = false;
+
+      const fail = (message: string) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        try {
+          socket.close();
+        } catch {
+          // Already closing; nothing to do.
+        }
+        reject(new Error(message));
+      };
+
+      const deadline = setTimeout(() => {
+        fail('방 서버가 응답하지 않습니다 (10초 초과).');
+      }, CONNECT_TIMEOUT_MS);
 
       socket.onopen = () => {
         opened = true;
+        settled = true;
+        clearTimeout(deadline);
         this.socket = socket;
         resolve();
       };
       socket.onerror = () => {
-        if (!opened) reject(new Error('방에 연결할 수 없습니다.'));
+        fail('방에 연결할 수 없습니다.');
       };
       socket.onclose = (event) => {
         this.socket = null;
-        if (opened) this.onClose?.(event.reason || '방 연결이 끊어졌습니다.');
+        if (opened) {
+          this.onClose?.(event.reason || '방 연결이 끊어졌습니다.');
+          return;
+        }
+        // Closed without ever opening: the server refused the upgrade.
+        fail(event.reason || `방에 연결할 수 없습니다 (코드 ${event.code}).`);
       };
       socket.onmessage = (event: MessageEvent) => {
         if (typeof event.data !== 'string') return;
