@@ -107,7 +107,36 @@ export interface ShapeItem extends RectItemBase {
   radius: number;
 }
 
-export type SceneItem = TextItem | ImageItem | AvatarItem | ShapeItem;
+/**
+ * A framed third-party page: an alert overlay, or a video.
+ *
+ * This is the item that absorbs "a browser source per widget" — the argument the
+ * whole product rests on. StreamElements and Streamlabs come first in the
+ * allowlist because they are *designed* to be framed, pass alpha through, and
+ * are the ones people actually stack four of.
+ *
+ * The stored URL is the one the operator typed, normalised. Nothing environment
+ * dependent is baked into it — see `embedSrc`, which builds the real iframe URL
+ * at render time. Storing Twitch's `parent` would work perfectly until the day
+ * the scene is opened on another domain, and then fail silently.
+ */
+export interface EmbedItem extends RectItemBase {
+  kind: 'embed';
+  url: string;
+  /** Matched allowlist entry. Stored so the UI can name it without re-parsing. */
+  provider: EmbedProvider;
+}
+
+export type EmbedProvider = 'streamelements' | 'streamlabs' | 'youtube' | 'twitch';
+
+export const EMBED_PROVIDER_NAMES: Record<EmbedProvider, string> = {
+  streamelements: 'StreamElements',
+  streamlabs: 'Streamlabs',
+  youtube: 'YouTube',
+  twitch: 'Twitch',
+};
+
+export type SceneItem = TextItem | ImageItem | AvatarItem | ShapeItem | EmbedItem;
 
 export function isRect(item: SceneItem): item is AvatarItem | ShapeItem {
   return item.kind === 'avatar' || item.kind === 'shape';

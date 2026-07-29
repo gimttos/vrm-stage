@@ -80,8 +80,36 @@ body.obs #ui {
 
 /* Panels and placeholders. `max-width` from .scene-item would cap a full-width
    panel at 96%, so shapes opt out — their size is the point. */
-.scene-shape {
+.scene-shape,
+.scene-embed {
   max-width: none;
+}
+
+.scene-embed iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: transparent;
+  /* An iframe swallows every pointer event, so a draggable one is a draggable
+     one you can never grab. The embed is a broadcast overlay — nobody clicks it
+     in OBS either — so the wrapper takes the drag and the frame takes nothing. */
+  pointer-events: none;
+}
+
+/* Sits behind the frame: visible only when the site refused to be framed. */
+.embed-note {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  padding: 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .scene-text {
@@ -212,11 +240,47 @@ body.live #scene-edit {
   background-color: rgba(255, 255, 255, 0.36);
 }
 
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .panel h1 {
   margin: 0 0 2px;
   font-size: 13px;
   font-weight: 650;
   letter-spacing: 0.02em;
+}
+
+button.collapse {
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+button.collapse:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink);
+}
+
+/* Folded: only the title bar remains, so the stage underneath is composable.
+   `width: auto` lets it shrink to the button rather than keeping a 268px slab. */
+.panel.collapsed {
+  width: auto;
+  padding: 8px 10px;
+}
+
+.panel.collapsed > *:not(.panel-head) {
+  display: none;
+}
+
+.panel.collapsed h1 {
+  margin: 0;
 }
 
 .panel .tagline {

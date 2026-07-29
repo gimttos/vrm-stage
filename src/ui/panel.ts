@@ -5,7 +5,7 @@ import type { BodyRigConfig } from '../driver/bodyRig';
 import type { HandRigConfig } from '../driver/handRig';
 import type { AppMode } from '../mode';
 import type { SceneManager } from '../scene/SceneManager';
-import type { SceneItem, SceneSpec } from '../scene/sceneTypes';
+import { EMBED_PROVIDER_NAMES, type SceneItem, type SceneSpec } from '../scene/sceneTypes';
 import { PRESETS } from '../scene/presets';
 import type { Framing } from '../stage/Stage';
 
@@ -19,6 +19,16 @@ import type { Framing } from '../stage/Stage';
  * a live status over a motionless avatar, with nothing to tell them apart.
  */
 export type TrackingState = 'off' | 'starting' | 'on' | 'searching';
+
+const COLLAPSE_KEY = 'vrm-stage:panel-collapsed';
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 type NumericKey = 'headGain' | 'neckShare' | 'pitchOffset' | 'yawOffset' | 'rollOffset';
 type BooleanKey =
@@ -160,8 +170,16 @@ export class Panel {
       strip.append(tab);
     }
 
+    // Collapse. The panel covers the top-left eighth of the stage, which is
+    // exactly where a scene wants a title or a webcam — so composing under it
+    // means guessing. The state persists because whoever folds it away is
+    // usually mid-composition and would only fold it again next reload.
+    const collapse = button('«', 'collapse', () => this.setCollapsed(!this.collapsed));
+    collapse.title = '패널 접기 / 펼치기';
+    this.collapseButton = collapse;
+
     const panel = el('div', 'panel', [
-      el('h1', '', ['VRM Stage']),
+      el('div', 'panel-head', [el('h1', '', ['VRM Stage']), collapse]),
       el('p', 'tagline', [
         initial.mode === 'rig' ? '리깅 벤치 — 트래킹 조정' : '아바타가 들어있는 방송 화면',
       ]),
@@ -170,10 +188,29 @@ export class Panel {
       this.emotionFooter(),
       this.noticeBox,
     ]);
+    this.panelEl = panel;
 
     this.showTab(names[0]!);
+    this.setCollapsed(readCollapsed());
 
     root.append(this.dropzone, panel, this.licenseBox, this.errorBox);
+  }
+
+  // --------------------------------------------------------------- collapse
+
+  private panelEl: HTMLElement | null = null;
+  private collapseButton: HTMLButtonElement | null = null;
+  private collapsed = false;
+
+  private setCollapsed(next: boolean): void {
+    this.collapsed = next;
+    this.panelEl?.classList.toggle('collapsed', next);
+    if (this.collapseButton) this.collapseButton.textContent = next ? '»' : '«';
+    try {
+      localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0');
+    } catch {
+      // Private browsing; the panel simply reopens next time.
+    }
   }
 
   // ------------------------------------------------------------------- tabs
@@ -467,6 +504,17 @@ export class Panel {
     return grid;
   }
 
+  private addEmbed(): void {
+    const url = window.prompt(
+      '임베드할 주소\n\nStreamElements · Streamlabs 오버레이 URL, 또는 YouTube · Twitch 주소',
+      '',
+    );
+    if (!url) return;
+    if (!this.sceneApi.addEmbed(url)) {
+      this.setNotice('지원하지 않는 주소입니다 — StreamElements · Streamlabs · YouTube · Twitch만 됩니다.');
+    }
+  }
+
   private sceneTab(): HTMLElement {
     this.bgColorInput = document.createElement('input');
     this.bgColorInput.type = 'color';
@@ -497,6 +545,11 @@ export class Panel {
       row([
         button('+ 텍스트', '', () => this.sceneApi.addText()),
         button('+ 이미지 파일', '', () => this.pickSceneImage()),
+      ]),
+      row([button('+ 임베드', 'wide', () => this.addEmbed())]),
+      el('p', 'hint', [
+        'StreamElements · Streamlabs · YouTube · Twitch 주소만 받습니다. ' +
+          '알림 위젯 여러 개를 브라우저 소스 여러 개로 얹던 걸 씬 하나로 합치는 자리입니다.',
       ]),
       (this.inspector = el('div', 'inspector')),
       row([button('씬 링크 복사', 'primary wide', () => this.callbacks.onCopySceneLink())]),
@@ -769,6 +822,36 @@ export class Panel {
       boldLabel.append(boldToggle, document.createTextNode('굵게'));
 
       box.append(row([label('색'), colorInput, boldLabel]));
+    } else if (item.kind === 'embed') {
+      const urlInput = document.createElement('input');
+      urlInput.type = 'text';
+      urlInput.className = 'text-input';
+      urlInput.value = item.url;
+      // On change, not on input: re-framing the page on every keystroke would
+      // hammer the provider and never settle on a valid URL anyway.
+      urlInput.addEventListener('change', () => {
+        if (!this.sceneApi.retargetEmbed(item.id, urlInput.value)) {
+          this.setNotice('지원하지 않는 주소입니다 — StreamElements · Streamlabs · YouTube · Twitch만 됩니다.');
+          urlInput.value = item.url;
+        }
+      });
+      box.append(row([urlInput]));
+      box.append(row([label('제공처'), el('span', 'num', [EMBED_PROVIDER_NAMES[item.provider]])]));
+
+      for (const [key, text] of [
+        ['w', '너비'],
+        ['h', '높이'],
+      ] as const) {
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = '4';
+        input.max = '100';
+        input.value = String(item[key]);
+        input.addEventListener('input', () => {
+          this.sceneApi.updateItem(item.id, { [key]: Number(input.value) });
+        });
+        box.append(row([label(text), input]));
+      }
     } else if (item.kind === 'image') {
       const widthInput = document.createElement('input');
       widthInput.type = 'range';

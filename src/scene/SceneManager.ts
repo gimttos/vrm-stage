@@ -1,9 +1,12 @@
 import { withBase } from '../basePath';
+import { embedSrc, sanitizeEmbedUrl } from './embeds';
 import {
+  EMBED_PROVIDER_NAMES,
   SCENE_VERSION,
   emptyScene,
   fullFrameAvatar,
   type AvatarItem,
+  type EmbedItem,
   type ImageItem,
   type SceneBackground,
   type SceneItem,
@@ -336,6 +339,41 @@ export class SceneManager {
     return item;
   }
 
+  /** Adds a framed page, or returns null when the URL is not on the allowlist. */
+  addEmbed(url: string): EmbedItem | null {
+    const match = sanitizeEmbedUrl(url);
+    if (!match) return null;
+    const item: EmbedItem = {
+      id: newId(),
+      kind: 'embed',
+      x: 50,
+      y: 45,
+      band: 'front',
+      w: 40,
+      h: 30,
+      url: match.url,
+      provider: match.provider,
+    };
+    this.spec.items.push(item);
+    this.renderItem(item);
+    this.select(item.id);
+    this.emit();
+    return item;
+  }
+
+  /** Points an existing embed at a new URL. False when it is not allowlisted. */
+  retargetEmbed(id: string, url: string): boolean {
+    const match = sanitizeEmbedUrl(url);
+    const item = this.spec.items.find((entry) => entry.id === id);
+    if (!match || item?.kind !== 'embed') return false;
+    item.url = match.url;
+    item.provider = match.provider;
+    // A new src means a new frame; styling cannot swap a page.
+    this.renderAll();
+    this.emit();
+    return true;
+  }
+
   addImage(url: string): ImageItem {
     const item: ImageItem = {
       id: newId(),
@@ -433,6 +471,8 @@ export class SceneManager {
     } else if (item.kind === 'shape') {
       el = document.createElement('div');
       el.className = 'scene-item scene-shape';
+    } else if (item.kind === 'embed') {
+      el = this.buildEmbed(item);
     } else {
       const img = document.createElement('img');
       img.className = 'scene-item scene-image';
@@ -455,6 +495,41 @@ export class SceneManager {
    * hit-tested against its rect by the stage-level handler, which runs only
    * after the real items have declined the click.
    */
+  /**
+   * A framed page, with the note that explains a blank one.
+   *
+   * Many sites refuse to be framed (`X-Frame-Options`, `frame-ancestors`), and
+   * the refusal is not reliably detectable from script — `load` fires for the
+   * browser's own error page too. So instead of guessing, the reason sits
+   * BEHIND the iframe: if the frame paints, nobody sees it; if the site refused,
+   * the operator reads why instead of staring at an empty rectangle.
+   *
+   * Editor only. In live output the note would be part of the broadcast.
+   */
+  private buildEmbed(item: EmbedItem): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.className = 'scene-item scene-embed';
+
+    if (this.editable) {
+      const note = document.createElement('div');
+      note.className = 'embed-note';
+      note.textContent = `${EMBED_PROVIDER_NAMES[item.provider]} 임베드 — 비어 있다면 이 사이트가 임베드를 거부한 것입니다.`;
+      wrap.append(note);
+    }
+
+    const frame = document.createElement('iframe');
+    // No `allow-same-origin` risk here: the sanitizer refuses our own hostname,
+    // so a framed page can never be same-origin and can never strip its sandbox.
+    // The players do need their own origin to work at all.
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
+    frame.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture');
+    frame.setAttribute('loading', 'lazy');
+    frame.src = embedSrc(item);
+    wrap.append(frame);
+    return wrap;
+  }
+
   /**
    * The avatar's backing plate: a flat fill drawn inside its rect only.
    *
@@ -626,6 +701,12 @@ export class SceneManager {
       return;
     }
 
+    if (item.kind === 'embed') {
+      el.style.width = `${item.w}%`;
+      el.style.height = `${item.h}%`;
+      return;
+    }
+
     if (item.kind === 'text') {
       // textContent, never innerHTML: scene JSON arrives from URLs and files.
       el.textContent = item.text;
@@ -748,6 +829,21 @@ export function sanitizeScene(raw: unknown): SceneSpec | null {
         bold: it['bold'] === true,
         shadow: it['shadow'] !== false,
       });
+    } else if (it['kind'] === 'embed') {
+      // Dropped entirely when the URL is not allowlisted. A scene arrives from
+      // a link someone else built, so an unrecognised embed must vanish rather
+      // than render as a mystery box.
+      const match = sanitizeEmbedUrl(it['url']);
+      if (match) {
+        items.push({
+          ...base,
+          kind: 'embed',
+          w: Math.min(100, Math.max(4, asNumber(it['w'], 40))),
+          h: Math.min(100, Math.max(4, asNumber(it['h'], 30))),
+          url: match.url,
+          provider: match.provider,
+        });
+      }
     } else if (it['kind'] === 'shape') {
       items.push({
         ...base,
@@ -834,6 +930,12 @@ export function compact(spec: SceneSpec): unknown {
       if (item.h !== 20) out['h'] = round(item.h);
       if (item.color !== '#ffffff') out['color'] = item.color;
       if (item.radius !== 0) out['radius'] = round(item.radius);
+    } else if (item.kind === 'embed') {
+      out['url'] = item.url;
+      // `provider` is re-derived by the sanitizer from the URL, so shipping it
+      // would be a second copy that can disagree with the first.
+      if (item.w !== 40) out['w'] = round(item.w);
+      if (item.h !== 30) out['h'] = round(item.h);
     } else {
       if (item.w !== 100) out['w'] = round(item.w);
       if (item.h !== 100) out['h'] = round(item.h);

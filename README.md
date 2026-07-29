@@ -402,6 +402,9 @@ src/
 - [x] 7.3 씬 v2 — z밴드(back/front) + **아바타가 씬의 한 행**이 되어 위치·크기·
        모서리·프레이밍을 가짐 (WebGL viewport/scissor, 양축 맞춤)
 - [x] 7.4 씬 프리셋 6종 + 도형 아이템 (애셋 0, 링크 최대 604자)
+- [x] 7.7 미디어 임베드 — StreamElements · Streamlabs · YouTube · Twitch 허용목록
+       (샌드박스 iframe, Twitch `parent`는 렌더 시각 계산, CSP `frame-src` 2차 방어)
+- [x] 7.8 패널 접기
 - [x] 7.6 상체 좌우 흔들림 트래킹 (PoseLandmarker) + 대기 자세 팔 내림
 - [ ] 8. 트리거 시스템 + 채팅 연동 (+ 브리지 릴레이로 실제 OBS 실시간 동기화)
 - [ ] 9. WebRTC 멀티 유저 콜라보 (아키텍처만 열어둠)

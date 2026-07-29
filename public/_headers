@@ -21,3 +21,9 @@
   # These are ALLOW rules, not denials: the app needs the camera for tracking,
   # and display-capture/microphone are what the recording work will use.
   Permissions-Policy: camera=(self), microphone=(self), display-capture=(self)
+  # Second line of defence for scene embeds. `sanitizeEmbedUrl` is the first,
+  # but it is client code — a scene arriving from someone else's link is only
+  # ever as trustworthy as the code that parsed it, and that code can be
+  # stepped over in devtools. This header cannot. Keep the two lists in sync:
+  # src/scene/embeds.ts is the readable copy.
+  Content-Security-Policy: frame-src https://*.streamelements.com https://*.streamlabs.com https://www.youtube-nocookie.com https://player.twitch.tv;
