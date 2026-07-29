@@ -471,6 +471,11 @@ select {
   background: #34d399;
 }
 
+/* Camera is open but nothing is being detected — a real state, not a success. */
+.dot.searching {
+  background: var(--warn);
+}
+
 /* ---------- drop zone ---------- */
 
 .dropzone {

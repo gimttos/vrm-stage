@@ -820,9 +820,34 @@ window.addEventListener('drop', (event) => {
 
 let debugAccumulator = 0;
 
+/**
+ * One frame.
+ *
+ * Wrapped, because an exception anywhere above `stage.render()` used to freeze
+ * the picture with no message: `requestAnimationFrame` is queued first, so the
+ * loop kept spinning while nothing ever drew again. That is indistinguishable
+ * from "tracking stopped working" and gives no clue where to look.
+ */
 function animate(): void {
   requestAnimationFrame(animate);
+  try {
+    frameBody();
+  } catch (error) {
+    reportLoopFailure(error);
+  }
+}
 
+let loopFailed = false;
+
+function reportLoopFailure(error: unknown): void {
+  // Once. A throwing frame throws sixty times a second.
+  if (loopFailed) return;
+  loopFailed = true;
+  console.error('[vrm-stage] render loop failed', error);
+  panel.showError(`화면 갱신이 멈췄습니다 — ${describe(error)}`);
+}
+
+function frameBody(): void {
   const delta = stage.tick();
   const vrm: VRM | undefined = avatar?.vrm;
   const frame = debugFrame ?? source?.read() ?? null;
@@ -842,6 +867,9 @@ function animate(): void {
   if (debugAccumulator > 0.1) {
     debugAccumulator = 0;
     panel.setDebug(driver.debug);
+    // The honest status: a running source that is detecting nothing is NOT
+    // tracking, however successfully the camera opened.
+    if (trackingWanted) panel.setTrackingState(driver.debug.tracked ? 'on' : 'searching');
   }
 }
 

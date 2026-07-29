@@ -8,7 +8,16 @@ import type { SceneManager } from '../scene/SceneManager';
 import type { SceneItem } from '../scene/sceneTypes';
 import type { Framing } from '../stage/Stage';
 
-export type TrackingState = 'off' | 'starting' | 'on';
+/**
+ * `on` means frames are actually landing on the avatar. `searching` means the
+ * camera opened but nothing is being detected.
+ *
+ * The distinction is the whole point: the status used to flip to "추적 중" the
+ * moment `start()` resolved, which only proves the camera opened and the models
+ * loaded. A silent detector failure then looked identical to working tracking —
+ * a live status over a motionless avatar, with nothing to tell them apart.
+ */
+export type TrackingState = 'off' | 'starting' | 'on' | 'searching';
 
 type NumericKey = 'headGain' | 'neckShare' | 'pitchOffset' | 'yawOffset' | 'rollOffset';
 type BooleanKey =
@@ -294,16 +303,26 @@ export class Panel {
     plateLabel.append(plateOn, document.createTextNode('배경판'));
     this.plateInputs = { on: plateOn, color: plateColor };
 
+    // Says what the avatar's rectangle actually is right now. A crop is easy to
+    // create by accident — in crop mode a forgotten Ctrl turns a camera pan into
+    // a new rectangle — and from then on the avatar sits small in a corner,
+    // which reads as "the avatar broke", not "I cropped it".
+    const state = el('p', 'hint', ['']);
+    this.cropState = state;
+
     return el('div', '', [
       row([toggleLabel]),
       hint,
+      state,
+      row([button('전체 화면으로', 'wide', () => this.sceneApi.resetCrop())]),
       this.framingRow(),
       row([label('모서리'), radius]),
       row([plateLabel, plateColor]),
-      row([button('전체 화면으로', 'wide', () => this.sceneApi.resetCrop())]),
       row([button('구도 초기화', 'wide', () => this.callbacks.onResetView())]),
     ]);
   }
+
+  private cropState: HTMLElement | null = null;
 
   private radiusInput: HTMLInputElement | null = null;
   private plateInputs: { on: HTMLInputElement; color: HTMLInputElement } | null = null;
@@ -321,6 +340,12 @@ export class Panel {
     if (this.plateInputs) {
       this.plateInputs.on.checked = item.plate !== null;
       if (item.plate !== null) this.plateInputs.color.value = item.plate;
+    }
+    if (this.cropState) {
+      const full = item.w >= 99 && item.h >= 99;
+      this.cropState.textContent = full
+        ? '지금: 전체 화면 (크롭 없음)'
+        : `지금: 화면의 ${Math.round(item.w)}% × ${Math.round(item.h)}% 로 잘려 있습니다.`;
     }
   }
 
@@ -529,12 +554,24 @@ export class Panel {
   }
 
   setTrackingState(state: TrackingState): void {
+    if (state === this.trackingState) return;
+    this.trackingState = state;
+
     this.statusDot.classList.toggle('live', state === 'on');
+    this.statusDot.classList.toggle('searching', state === 'searching');
     this.statusText.textContent =
-      state === 'on' ? '추적 중' : state === 'starting' ? '준비 중…' : '정지';
+      state === 'on'
+        ? '추적 중'
+        : state === 'searching'
+          ? '얼굴 찾는 중…'
+          : state === 'starting'
+            ? '준비 중…'
+            : '정지';
     this.trackButton.textContent = state === 'off' ? '트래킹 시작' : '트래킹 정지';
     this.trackButton.disabled = state === 'starting';
   }
+
+  private trackingState: TrackingState | null = null;
 
   setNotice(message: string): void {
     this.noticeBox.textContent = message;

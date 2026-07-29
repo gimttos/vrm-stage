@@ -106,6 +106,18 @@ export class Stage {
     this.resize();
   }
 
+  /**
+   * Is the avatar filling the whole frame — the "never cropped" state?
+   *
+   * Slack on the edges because a rect dragged back out by hand lands on 99.7,
+   * not 100, and a frame that is 0.3% short of full is full as far as anyone
+   * looking at it is concerned.
+   */
+  private get isFullFrame(): boolean {
+    const p = this.rectPct;
+    return !p || (p.w >= 99 && p.h >= 99 && p.x <= 1 && p.y <= 1);
+  }
+
   render(): void {
     const { x, y, w, h } = this.viewport;
 
@@ -362,7 +374,11 @@ export class Stage {
    */
   private applyMask(): void {
     const style = this.renderer.domElement.style;
-    if (!this.rectPct || this.cornerPct <= 0) {
+    // A full-frame avatar has not been cropped, so there is no box to round.
+    // Rounding it anyway takes a radius meant for a small corner cam and cuts it
+    // out of the entire broadcast frame — a 20% radius on 1280x720 is a 144px
+    // bite from each corner of the whole picture.
+    if (!this.rectPct || this.cornerPct <= 0 || this.isFullFrame) {
       style.clipPath = '';
       return;
     }
