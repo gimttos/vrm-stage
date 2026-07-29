@@ -172,12 +172,41 @@ export class SceneManager {
     this.onSelect?.(null);
   }
 
+  /**
+   * Restores the last scene edited in THIS browser.
+   *
+   * The avatar's box is deliberately not restored — every load starts full
+   * frame. Local storage is a convenience, and a crop is far too easy to make by
+   * accident (in crop mode a forgotten Ctrl draws one), so carrying it across
+   * reloads means a stray drag can leave the avatar stuck in a corner with no
+   * obvious cause. Overlays and background are restored as before; only the box
+   * resets.
+   *
+   * A crop that was MEANT survives the way every deliberate scene does — in the
+   * `#s=` link and in exported scene JSON, both of which load through `load()`
+   * untouched. That distinction matters: the OBS browser source opens a `#s=`
+   * URL, so broadcast layouts keep their corner cam.
+   */
   loadFromStorage(): boolean {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return false;
       const spec = sanitizeScene(JSON.parse(raw));
       if (!spec) return false;
+
+      const avatar = spec.items.find((item) => item.kind === 'avatar') as AvatarItem | undefined;
+      if (avatar) {
+        const fresh = fullFrameAvatar();
+        avatar.x = fresh.x;
+        avatar.y = fresh.y;
+        avatar.w = fresh.w;
+        avatar.h = fresh.h;
+        // The rounding and backing plate only read as deliberate on a cropped
+        // box; stretched across the whole frame they are leftovers, not a look.
+        avatar.radius = fresh.radius;
+        avatar.plate = fresh.plate;
+      }
+
       this.load(spec);
       return true;
     } catch {
