@@ -34,6 +34,7 @@ export interface PanelCallbacks {
   onHandConfigChange(patch: Partial<HandRigConfig>): void;
   onBodyConfigChange(patch: Partial<BodyRigConfig>): void;
   onResetView(): void;
+  onCropModeChange(on: boolean): void;
   onEmotion(name: string): void;
   onCopySceneLink(): void;
   onTrackInThisWindowChange(enabled: boolean): void;
@@ -72,10 +73,10 @@ export interface PanelInitialState {
  * diagnostic surface rather than a control.
  */
 const TAB_SETS: Record<AppMode, string[]> = {
-  studio: ['씬', '아바타', '트래킹', '손', '보정', '출력'],
+  studio: ['씬', '크롭', '아바타', '트래킹', '손', '보정', '출력'],
   rig: ['트래킹', '손', '보정', '디버그', '아바타'],
   // The panel is hidden by CSS in live mode; the set only needs to be valid.
-  live: ['씬', '아바타', '트래킹', '손', '보정', '출력'],
+  live: ['씬', '크롭', '아바타', '트래킹', '손', '보정', '출력'],
 };
 
 export class Panel {
@@ -124,6 +125,7 @@ export class Panel {
 
     const builders: Record<string, () => HTMLElement> = {
       아바타: () => this.avatarTab(),
+      크롭: () => this.cropTab(),
       트래킹: () => this.trackingTab(),
       손: () => this.handsTab(),
       보정: () => this.calibrationTab(),
@@ -215,7 +217,7 @@ export class Panel {
     if (this.framingSelect) this.framingSelect.value = framing;
   }
 
-  private avatarTab(): HTMLElement {
+  private framingRow(): HTMLElement {
     const framing = select(
       [
         ['bust', '흉상'],
@@ -226,13 +228,100 @@ export class Panel {
       (value) => this.callbacks.onFramingChange(value as Framing),
     );
     this.framingSelect = framing as HTMLSelectElement;
+    return row([label('프레이밍'), framing]);
+  }
+
+  private avatarTab(): HTMLElement {
+    const rows = [row([button('VRM 열기', 'wide', () => this.callbacks.onPickFile())])];
+    // In the compositor these live in the 크롭 tab, so that "how the avatar sits
+    // in the frame" has exactly one home. The rig bench has no crop tab — it
+    // always renders the avatar full-frame — so it keeps them here.
+    if (this.initial.mode === 'rig') {
+      rows.push(
+        this.framingRow(),
+        row([button('시야 초기화', 'wide', () => this.callbacks.onResetView())]),
+        el('p', 'hint', ['Ctrl + 드래그로 위치 이동, 휠로 확대·축소.']),
+      );
+    }
+    return el('div', '', rows);
+  }
+
+  /**
+   * Crop: where the avatar sits in the broadcast frame, and how much of it shows.
+   *
+   * Everything here used to be in three places — width and height in the scene
+   * inspector, framing in the 아바타 tab, pan and zoom on an undiscoverable
+   * Ctrl-drag. One visual result, three homes, and the shape of the rectangle
+   * expressed as numbers. Now the rectangle is drawn by hand and this tab holds
+   * only what a drag cannot express.
+   */
+  private cropTab(): HTMLElement {
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    const toggleLabel = el('label', 'toggle');
+    toggleLabel.append(toggle, document.createTextNode('크롭 모드'));
+
+    const hint = el('p', 'hint', ['']);
+    const setHint = () => {
+      hint.textContent = toggle.checked
+        ? '빈 곳을 드래그해 영역을 그리고, 안쪽을 잡아 옮기고, 모서리로 크기를 바꿉니다. Ctrl + 드래그와 휠은 사각형 안에서 아바타의 구도를 잡습니다.'
+        : '크롭 모드를 켜면 화면에서 직접 아바타 영역을 그릴 수 있습니다.';
+    };
+    toggle.addEventListener('change', () => {
+      this.callbacks.onCropModeChange(toggle.checked);
+      setHint();
+    });
+    setHint();
+
+    const radius = document.createElement('input');
+    radius.type = 'range';
+    radius.min = '0';
+    radius.max = '50';
+    radius.value = '0';
+    radius.addEventListener('input', () => this.patchAvatar({ radius: Number(radius.value) }));
+    this.radiusInput = radius;
+
+    const plateOn = document.createElement('input');
+    plateOn.type = 'checkbox';
+    const plateColor = document.createElement('input');
+    plateColor.type = 'color';
+    plateColor.value = '#101018';
+    const applyPlate = () =>
+      this.patchAvatar({ plate: plateOn.checked ? plateColor.value : null });
+    plateOn.addEventListener('change', applyPlate);
+    plateColor.addEventListener('input', applyPlate);
+    const plateLabel = el('label', 'toggle');
+    plateLabel.append(plateOn, document.createTextNode('배경판'));
+    this.plateInputs = { on: plateOn, color: plateColor };
 
     return el('div', '', [
-      row([button('VRM 열기', 'wide', () => this.callbacks.onPickFile())]),
-      row([label('프레이밍'), framing]),
-      row([button('시야 초기화', 'wide', () => this.callbacks.onResetView())]),
-      el('p', 'hint', ['Ctrl + 드래그로 위치 이동, 휠로 확대·축소.']),
+      row([toggleLabel]),
+      hint,
+      this.framingRow(),
+      row([label('모서리'), radius]),
+      row([plateLabel, plateColor]),
+      row([button('전체 화면으로', 'wide', () => this.sceneApi.resetCrop())]),
+      row([button('구도 초기화', 'wide', () => this.callbacks.onResetView())]),
     ]);
+  }
+
+  private radiusInput: HTMLInputElement | null = null;
+  private plateInputs: { on: HTMLInputElement; color: HTMLInputElement } | null = null;
+
+  private patchAvatar(patch: Record<string, unknown>): void {
+    const item = this.sceneApi.avatarItem;
+    if (item) this.sceneApi.updateItem(item.id, patch);
+  }
+
+  /** Reflects avatar values a shared link or a preset can set. */
+  syncCropControls(): void {
+    const item = this.sceneApi.avatarItem;
+    if (!item) return;
+    if (this.radiusInput) this.radiusInput.value = String(item.radius);
+    if (this.plateInputs) {
+      this.plateInputs.on.checked = item.plate !== null;
+      if (item.plate !== null) this.plateInputs.color.value = item.plate;
+    }
   }
 
   private trackingTab(): HTMLElement {
@@ -622,25 +711,10 @@ export class Panel {
         this.sceneApi.updateItem(item.id, { width: Number(widthInput.value) });
       });
       box.append(row([label('너비'), widthInput]));
-    } else {
-      // Avatar: size and corner rounding. Framing and view live in the 아바타 tab,
-      // which is where someone goes to change how the avatar itself is posed.
-      for (const [key, text, min, max] of [
-        ['w', '너비', 5, 100],
-        ['h', '높이', 5, 100],
-        ['radius', '모서리', 0, 50],
-      ] as const) {
-        const input = document.createElement('input');
-        input.type = 'range';
-        input.min = String(min);
-        input.max = String(max);
-        input.value = String(item[key]);
-        input.addEventListener('input', () => {
-          this.sceneApi.updateItem(item.id, { [key]: Number(input.value) });
-        });
-        box.append(row([label(text), input]));
-      }
     }
+    // The avatar has no inspector on purpose. Numeric width/height sliders for a
+    // rectangle you can see are a worse control than the rectangle itself, so it
+    // is shaped by dragging in the 크롭 tab instead.
 
     // The avatar is the performer, not an overlay — deleting it would leave a
     // scene with nothing to drive.

@@ -154,12 +154,20 @@ const panel = new Panel(
       // to restart the source rather than quietly do nothing.
       if (wantsBody && sourceKind === 'webcam' && trackingWanted) void restartTracking();
     },
+    onCropModeChange: (on) => {
+      sceneManager.setCropMode(on);
+      panel.setNotice(
+        on
+          ? '크롭 모드 — 빈 곳을 드래그해 아바타 영역을 그리세요.'
+          : '크롭 모드를 껐습니다.',
+      );
+    },
     onResetView: () => {
       // Through the scene, or the reset would be undone by the next sync.
       const item = sceneManager.avatarItem;
       if (item) sceneManager.updateItem(item.id, { panX: 0, panY: 0, zoom: 1 });
       else stage.resetView();
-      panel.setNotice('시야를 초기화했습니다.');
+      panel.setNotice('구도를 초기화했습니다.');
       scheduleConfigBroadcast();
     },
     onEmotion: (name) => chooseEmotion(name),
@@ -240,6 +248,7 @@ function syncAvatar(): void {
 
   stage.setView({ panX: item.panX, panY: item.panY, zoom: item.zoom });
   panel.setFraming(item.framing);
+  panel.syncCropControls();
 }
 
 // Scene load priority: URL hash (self-contained — survives into a real OBS

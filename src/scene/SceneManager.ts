@@ -16,6 +16,15 @@ const STORAGE_KEY = 'vrm-stage:scene';
 /** Design height the text sizes are authored against. */
 const DESIGN_HEIGHT = 1080;
 
+type Corner = 'nw' | 'ne' | 'sw' | 'se';
+const CORNERS: Corner[] = ['nw', 'ne', 'sw', 'se'];
+
+/** Grab radius for a corner handle, in CSS pixels. */
+const HANDLE_GRAB = 15;
+
+/** Smallest crop, percent. Also the threshold below which a drag is a click. */
+const MIN_RECT = 5;
+
 /**
  * Owns the scene document and its DOM: background, overlay items, selection,
  * and drag editing. Independent of the control panel so the OBS instance can
@@ -47,6 +56,16 @@ export class SceneManager {
   private readonly plates = new Map<string, HTMLElement>();
   private selectedId: string | null = null;
 
+  /**
+   * Crop mode: the stage becomes a photo-crop surface for the avatar.
+   *
+   * Off by default and off is the important half — an always-visible outline
+   * around the avatar is pure noise, and for a full-frame avatar it is a
+   * rectangle drawn around the entire stage. The rect only appears when the
+   * operator has said they are working on it.
+   */
+  private cropping = false;
+
   /** Fired after any user-visible change; wired to broadcast + notices. */
   onChange: (() => void) | null = null;
   /** Fired when the selection changes; the panel renders its inspector from it. */
@@ -77,17 +96,54 @@ export class SceneManager {
       stageEl.appendChild(edit);
 
       // Last responder. Items handle their own clicks and stop propagation, so
-      // anything arriving here missed every overlay: it is either a camera
-      // gesture, a grab of the avatar (hit-tested by rect, since the avatar has
-      // no DOM node of its own), or a click on nothing.
+      // anything arriving here missed every overlay.
       stageEl.addEventListener('pointerdown', (event) => {
+        // Ctrl/Cmd is the camera's, always. Keeping it reserved is what lets
+        // plain drag mean something different without the two ever colliding.
         if (event.ctrlKey || event.metaKey) return;
-        const avatar = this.avatarItem;
-        if (avatar && avatar.hidden !== true && this.hitsAvatar(event, avatar)) {
-          this.beginDrag(event, avatar.id);
-        } else {
+
+        if (!this.cropping) {
           this.select(null);
+          return;
         }
+
+        // Crop mode. Overlays are inert here (CSS), so the whole stage is one
+        // surface and the gesture is decided by geometry alone.
+        const avatar = this.avatarItem;
+        if (!avatar) return;
+
+        // A full-frame avatar is the "not cropped yet" state, and it leaves no
+        // outside to start a marquee from. Every drag draws, or the first crop
+        // would be impossible to make.
+        if (avatar.w >= 99 && avatar.h >= 99) {
+          this.beginMarquee(event, avatar);
+          return;
+        }
+
+        const corner = this.hitsCorner(event, avatar);
+        if (corner) this.beginResize(event, avatar, corner);
+        else if (this.hitsAvatar(event, avatar)) this.beginDrag(event, avatar.id);
+        else this.beginMarquee(event, avatar);
+      });
+
+      // Cursor is the only affordance a geometric hit test gets for free —
+      // nothing under the pointer is a real element, so :hover cannot help.
+      stageEl.addEventListener('pointermove', (event) => {
+        if (!this.cropping) return;
+        const avatar = this.avatarItem;
+        if (!avatar) return;
+        if (avatar.w >= 99 && avatar.h >= 99) {
+          stageEl.style.cursor = 'crosshair';
+          return;
+        }
+        const corner = this.hitsCorner(event, avatar);
+        stageEl.style.cursor = corner
+          ? corner === 'nw' || corner === 'se'
+            ? 'nwse-resize'
+            : 'nesw-resize'
+          : this.hitsAvatar(event, avatar)
+            ? 'move'
+            : 'crosshair';
       });
     }
 
@@ -180,6 +236,36 @@ export class SceneManager {
   /** The single avatar row, which every sanitized scene has. */
   get avatarItem(): AvatarItem | null {
     return (this.spec.items.find((item) => item.kind === 'avatar') as AvatarItem) ?? null;
+  }
+
+  get cropMode(): boolean {
+    return this.cropping;
+  }
+
+  /**
+   * Enters or leaves crop mode.
+   *
+   * While cropping, overlays stop taking pointer events (see the `.cropping`
+   * rules): the stage is one surface for one job, so a stray text item cannot
+   * intercept half of a crop drag.
+   */
+  setCropMode(on: boolean): void {
+    if (!this.editable || this.cropping === on) return;
+    this.cropping = on;
+    this.bands.back.classList.toggle('cropping', on);
+    this.bands.front.classList.toggle('cropping', on);
+    if (!on) {
+      this.stageEl.style.cursor = '';
+      this.select(null);
+    }
+    this.renderAll();
+  }
+
+  /** Restores the avatar to the whole frame — the way out of a bad crop. */
+  resetCrop(): void {
+    const item = this.avatarItem;
+    if (!item) return;
+    this.updateItem(item.id, { x: 50, y: 50, w: 100, h: 100 });
   }
 
   // ------------------------------------------------------------- editing
@@ -346,24 +432,125 @@ export class SceneManager {
   }
 
   private renderAvatarGrip(item: AvatarItem): void {
-    if (!this.bands.edit) return;
+    if (!this.bands.edit || !this.cropping) return;
     const grip = document.createElement('div');
     grip.className = 'scene-grip scene-avatar-grip';
     grip.hidden = item.hidden === true;
+    for (const corner of CORNERS) {
+      const handle = document.createElement('div');
+      handle.className = `crop-handle crop-${corner}`;
+      grip.appendChild(handle);
+    }
     this.styleItem(grip, item);
     this.bands.edit.appendChild(grip);
     this.elements.set(item.id, grip);
   }
 
-  /** Is this point inside the avatar's rect? Percentages, so resolution-free. */
-  private hitsAvatar(event: PointerEvent, item: AvatarItem): boolean {
+  /** Pointer position as a percentage of the stage. Null if it has no size. */
+  private pctOf(event: { clientX: number; clientY: number }): { x: number; y: number } | null {
     const rect = this.stageEl.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return false;
-    const px = ((event.clientX - rect.left) / rect.width) * 100;
-    const py = ((event.clientY - rect.top) / rect.height) * 100;
-    return (
-      Math.abs(px - item.x) <= item.w / 2 && Math.abs(py - item.y) <= item.h / 2
-    );
+    if (rect.width === 0 || rect.height === 0) return null;
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * 100,
+      y: ((event.clientY - rect.top) / rect.height) * 100,
+    };
+  }
+
+  /** Is this point inside the avatar's rect? Percentages, so resolution-free. */
+  private hitsAvatar(event: { clientX: number; clientY: number }, item: AvatarItem): boolean {
+    const p = this.pctOf(event);
+    if (!p) return false;
+    return Math.abs(p.x - item.x) <= item.w / 2 && Math.abs(p.y - item.y) <= item.h / 2;
+  }
+
+  /** Which corner handle the pointer is on, if any. Measured in px, not %. */
+  private hitsCorner(event: { clientX: number; clientY: number }, item: AvatarItem): Corner | null {
+    const rect = this.stageEl.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    // A percentage tolerance would make the grab zone tall and thin on a wide
+    // stage. The handle is drawn in pixels, so it is hit-tested in pixels.
+    const left = rect.left + ((item.x - item.w / 2) / 100) * rect.width;
+    const right = rect.left + ((item.x + item.w / 2) / 100) * rect.width;
+    const top = rect.top + ((item.y - item.h / 2) / 100) * rect.height;
+    const bottom = rect.top + ((item.y + item.h / 2) / 100) * rect.height;
+
+    const nearX = Math.abs(event.clientX - left) <= HANDLE_GRAB ? 'w' : Math.abs(event.clientX - right) <= HANDLE_GRAB ? 'e' : null;
+    const nearY = Math.abs(event.clientY - top) <= HANDLE_GRAB ? 'n' : Math.abs(event.clientY - bottom) <= HANDLE_GRAB ? 's' : null;
+    return nearX && nearY ? (`${nearY}${nearX}` as Corner) : null;
+  }
+
+  /**
+   * Writes a rect onto the avatar and pushes it out live.
+   *
+   * `onChange` on every move rather than only on release: the rect drives the
+   * WebGL viewport, so without it the outline would slide away from the pixels
+   * it is supposed to be framing.
+   */
+  private applyRect(item: AvatarItem, x: number, y: number, w: number, h: number): void {
+    item.w = Math.min(100, Math.max(MIN_RECT, w));
+    item.h = Math.min(100, Math.max(MIN_RECT, h));
+    item.x = clampPct(x);
+    item.y = clampPct(y);
+    const el = this.elements.get(item.id);
+    if (el) this.styleItem(el, item);
+    this.onChange?.();
+  }
+
+  /** Drags one corner; the opposite corner stays put. */
+  private beginResize(event: PointerEvent, item: AvatarItem, corner: Corner): void {
+    event.preventDefault();
+    const anchorX = corner.includes('w') ? item.x + item.w / 2 : item.x - item.w / 2;
+    const anchorY = corner.startsWith('n') ? item.y + item.h / 2 : item.y - item.h / 2;
+
+    const move = (ev: PointerEvent) => {
+      const p = this.pctOf(ev);
+      if (!p) return;
+      const x = clampPct(p.x);
+      const y = clampPct(p.y);
+      this.applyRect(item, (anchorX + x) / 2, (anchorY + y) / 2, Math.abs(x - anchorX), Math.abs(y - anchorY));
+    };
+    this.trackDrag(move);
+  }
+
+  /**
+   * Draws a fresh rect from nothing, the way a photo crop tool does.
+   *
+   * The avatar renders inside the rect as it grows, so the drag is the preview.
+   * A drag too small to be deliberate is treated as a stray click and the old
+   * rect comes back — otherwise a mis-click would shrink the performer to a dot.
+   */
+  private beginMarquee(event: PointerEvent, item: AvatarItem): void {
+    event.preventDefault();
+    const start = this.pctOf(event);
+    if (!start) return;
+    const previous = { x: item.x, y: item.y, w: item.w, h: item.h };
+    let drawn = false;
+
+    const move = (ev: PointerEvent) => {
+      const p = this.pctOf(ev);
+      if (!p) return;
+      const x = clampPct(p.x);
+      const y = clampPct(p.y);
+      const w = Math.abs(x - start.x);
+      const h = Math.abs(y - start.y);
+      drawn = w >= MIN_RECT && h >= MIN_RECT;
+      this.applyRect(item, (start.x + x) / 2, (start.y + y) / 2, w, h);
+    };
+    this.trackDrag(move, () => {
+      if (!drawn) this.applyRect(item, previous.x, previous.y, previous.w, previous.h);
+    });
+  }
+
+  /** Shared pointer capture: move until release, then persist once. */
+  private trackDrag(move: (event: PointerEvent) => void, done?: () => void): void {
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      done?.();
+      this.emit();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
   }
 
   private styleItem(el: HTMLElement, item: SceneItem): void {
@@ -460,14 +647,7 @@ export class SceneManager {
       // drag live — the grip alone would slide off the pixels it represents.
       if (item.kind === 'avatar') this.onChange?.();
     };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      // One persist per drag, not per pixel.
-      this.emit();
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    this.trackDrag(move);
   }
 
   private emit(): void {

@@ -113,23 +113,49 @@ body.live #scene-edit {
   display: none;
 }
 
+/* ---------- crop mode ---------- */
+
+/* While cropping, the stage is one surface for one job: a text overlay must not
+   swallow half of a crop drag. Hit testing is geometric anyway (see
+   SceneManager), so switching these off costs nothing else. */
+#scene-front.cropping .scene-item,
+#scene-back.cropping .scene-item {
+  pointer-events: none;
+}
+
+/* The crop rectangle. `box-shadow` with an enormous spread dims everything
+   outside it in one property — the band clips the overflow — which is what
+   makes this read as "crop" rather than "a box is selected". */
 .scene-grip {
   position: absolute;
   transform: translate(-50%, -50%);
-  border: 1px dashed rgba(167, 139, 250, 0.55);
-  border-radius: 6px;
-  background: rgba(167, 139, 250, 0.06);
+  border: 1px solid rgba(167, 139, 250, 0.9);
+  box-shadow: 0 0 0 9999px rgba(10, 8, 16, 0.55);
 }
 
 .scene-avatar-grip::after {
-  content: '아바타';
+  content: '크롭';
   position: absolute;
-  top: 4px;
-  left: 6px;
+  top: -18px;
+  left: 0;
   color: var(--accent);
   font: 10px ui-sans-serif, system-ui, sans-serif;
-  opacity: 0.85;
+  letter-spacing: 0.06em;
 }
+
+.crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border: 1px solid rgba(10, 8, 16, 0.7);
+  border-radius: 2px;
+}
+
+.crop-nw { top: 0; left: 0; transform: translate(-50%, -50%); }
+.crop-ne { top: 0; right: 0; transform: translate(50%, -50%); }
+.crop-sw { bottom: 0; left: 0; transform: translate(-50%, 50%); }
+.crop-se { bottom: 0; right: 0; transform: translate(50%, 50%); }
 
 .selected {
   outline: 2px dashed var(--accent);
