@@ -8,6 +8,7 @@ import {
   type AvatarItem,
   type EmbedItem,
   type ImageItem,
+  type ShapeItem,
   type SceneBackground,
   type SceneItem,
   type SceneSpec,
@@ -393,12 +394,21 @@ export class SceneManager {
 
   updateItem(
     id: string,
-    patch: Partial<Omit<TextItem, 'kind'> & Omit<ImageItem, 'kind'> & Omit<AvatarItem, 'kind'>>,
+    patch: Partial<
+      Omit<TextItem, 'kind'> &
+        Omit<ImageItem, 'kind'> &
+        Omit<AvatarItem, 'kind'> &
+        Omit<ShapeItem, 'kind'> &
+        Omit<EmbedItem, 'kind'>
+    >,
   ): void {
     const item = this.spec.items.find((entry) => entry.id === id);
     if (!item) return;
 
     const movedBand = 'band' in patch && patch.band !== (item as { band?: string }).band;
+    // Sound and interactivity are baked into the iframe's src and attributes,
+    // so they need a fresh frame rather than a restyle.
+    const reframe = item.kind === 'embed' && ('muted' in patch || 'interactive' in patch);
     // A plate appearing or vanishing adds or removes a node, which styling
     // cannot do.
     const platedChanged =
@@ -408,7 +418,7 @@ export class SceneManager {
     // Moving between bands means moving the node, and reordering means redoing
     // the sequence. At 60 items a full re-render is free and keeps "later item
     // on top" honest without bookkeeping.
-    if (movedBand || platedChanged) {
+    if (movedBand || platedChanged || reframe) {
       this.renderAll();
     } else {
       const el = this.elements.get(id);
@@ -522,10 +532,19 @@ export class SceneManager {
     // so a framed page can never be same-origin and can never strip its sandbox.
     // The players do need their own origin to work at all.
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
-    frame.setAttribute('referrerpolicy', 'no-referrer');
+    // NOT `no-referrer`. YouTube validates the embed against the referrer and
+    // answers error 153 without one — the player renders a configuration error
+    // instead of the video. `strict-origin-when-cross-origin` sends the origin
+    // and nothing else, so the scene's query string and path never travel.
+    frame.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
     frame.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture');
     frame.setAttribute('loading', 'lazy');
     frame.src = embedSrc(item);
+    // Interactive frames take clicks in the LIVE output only. In the editor the
+    // operator is composing, and a frame that eats the drag is a frame that
+    // cannot be placed. Unmuted video needs this: browsers will not autoplay
+    // with sound, so something has to press play.
+    if (item.interactive && !this.editable) frame.style.pointerEvents = 'auto';
     wrap.append(frame);
     return wrap;
   }
@@ -842,6 +861,8 @@ export function sanitizeScene(raw: unknown): SceneSpec | null {
           h: Math.min(100, Math.max(4, asNumber(it['h'], 30))),
           url: match.url,
           provider: match.provider,
+          ...(it['muted'] === false ? { muted: false } : {}),
+          ...(it['interactive'] === true ? { interactive: true } : {}),
         });
       }
     } else if (it['kind'] === 'shape') {
@@ -936,6 +957,8 @@ export function compact(spec: SceneSpec): unknown {
       // would be a second copy that can disagree with the first.
       if (item.w !== 40) out['w'] = round(item.w);
       if (item.h !== 30) out['h'] = round(item.h);
+      if (item.muted === false) out['muted'] = false;
+      if (item.interactive) out['interactive'] = true;
     } else {
       if (item.w !== 100) out['w'] = round(item.w);
       if (item.h !== 100) out['h'] = round(item.h);

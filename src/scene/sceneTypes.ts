@@ -125,15 +125,47 @@ export interface EmbedItem extends RectItemBase {
   url: string;
   /** Matched allowlist entry. Stored so the UI can name it without re-parsing. */
   provider: EmbedProvider;
+  /**
+   * Optional so the common case costs nothing in the shared link.
+   *
+   * `muted` defaults true because browsers refuse unmuted autoplay outright —
+   * an unmuted embed simply does not start until something clicks it, which is
+   * why `interactive` exists next to it rather than as a separate feature.
+   */
+  muted?: boolean;
+  /** Lets the live output receive clicks on this frame. Editor stays inert. */
+  interactive?: boolean;
 }
 
-export type EmbedProvider = 'streamelements' | 'streamlabs' | 'youtube' | 'twitch';
+export type EmbedProvider =
+  | 'streamelements'
+  | 'streamlabs'
+  | 'toonation'
+  | 'twip'
+  | 'kofi'
+  | 'youtube'
+  | 'twitch'
+  | 'twitch-chat'
+  | 'chzzk'
+  | 'kick'
+  | 'vimeo'
+  | 'soundcloud'
+  | 'spotify';
 
 export const EMBED_PROVIDER_NAMES: Record<EmbedProvider, string> = {
   streamelements: 'StreamElements',
   streamlabs: 'Streamlabs',
+  toonation: '투네이션',
+  twip: '트윕',
+  kofi: 'Ko-fi',
   youtube: 'YouTube',
   twitch: 'Twitch',
+  'twitch-chat': 'Twitch 채팅',
+  chzzk: '치지직',
+  kick: 'Kick',
+  vimeo: 'Vimeo',
+  soundcloud: 'SoundCloud',
+  spotify: 'Spotify',
 };
 
 export type SceneItem = TextItem | ImageItem | AvatarItem | ShapeItem | EmbedItem;

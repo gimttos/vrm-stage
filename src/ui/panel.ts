@@ -548,8 +548,10 @@ export class Panel {
       ]),
       row([button('+ 임베드', 'wide', () => this.addEmbed())]),
       el('p', 'hint', [
-        'StreamElements · Streamlabs · YouTube · Twitch 주소만 받습니다. ' +
-          '알림 위젯 여러 개를 브라우저 소스 여러 개로 얹던 걸 씬 하나로 합치는 자리입니다.',
+        '알림: StreamElements · Streamlabs · 투네이션 · 트윕 · Ko-fi / ' +
+          '영상: YouTube · Twitch · 치지직 · Kick · Vimeo / ' +
+          '소리: SoundCloud · Spotify / 채팅: Twitch. ' +
+          '위젯 여러 개를 브라우저 소스 여러 개로 얹던 걸 씬 하나로 합치는 자리입니다.',
       ]),
       (this.inspector = el('div', 'inspector')),
       row([button('씬 링크 복사', 'primary wide', () => this.callbacks.onCopySceneLink())]),
@@ -837,6 +839,33 @@ export class Panel {
       });
       box.append(row([urlInput]));
       box.append(row([label('제공처'), el('span', 'num', [EMBED_PROVIDER_NAMES[item.provider]])]));
+
+      const sound = document.createElement('input');
+      sound.type = 'checkbox';
+      sound.checked = item.muted === false;
+      sound.addEventListener('change', () => {
+        this.sceneApi.updateItem(item.id, { muted: !sound.checked });
+      });
+      const soundLabel = el('label', 'toggle');
+      soundLabel.append(sound, document.createTextNode('소리'));
+
+      const click = document.createElement('input');
+      click.type = 'checkbox';
+      click.checked = item.interactive === true;
+      click.addEventListener('change', () => {
+        this.sceneApi.updateItem(item.id, { interactive: click.checked });
+      });
+      const clickLabel = el('label', 'toggle');
+      clickLabel.append(click, document.createTextNode('클릭 허용'));
+
+      box.append(row([soundLabel, clickLabel]));
+      box.append(
+        el('p', 'hint', [
+          '브라우저는 소리 있는 자동재생을 막습니다. 소리를 켰다면 「클릭 허용」도 켜고 ' +
+            '방송 화면에서 한 번 재생을 누르세요 (OBS는 소스 우클릭 → 상호작용). ' +
+            '편집 화면에서는 배치를 위해 항상 클릭이 막혀 있습니다.',
+        ]),
+      );
 
       for (const [key, text] of [
         ['w', '너비'],

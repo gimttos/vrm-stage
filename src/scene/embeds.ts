@@ -18,10 +18,24 @@ interface Match {
   url: string;
 }
 
-/** Overlay hosts, framed exactly as given — they are already embed endpoints. */
+/**
+ * Hosts framed exactly as given — they are already embed endpoints.
+ *
+ * The Korean services are here because they are what this audience actually
+ * runs: 투네이션 and 트윕 are the donation-alert widgets, 치지직 is Naver's
+ * streaming platform. A lineup of only Twitch and Streamlabs would be a lineup
+ * for somebody else's streamers.
+ */
 const OVERLAY_HOSTS: [string, EmbedProvider][] = [
   ['streamelements.com', 'streamelements'],
   ['streamlabs.com', 'streamlabs'],
+  ['toon.at', 'toonation'],
+  ['twip.kr', 'twip'],
+  ['ko-fi.com', 'kofi'],
+  ['chzzk.naver.com', 'chzzk'],
+  ['soundcloud.com', 'soundcloud'],
+  ['open.spotify.com', 'spotify'],
+  ['player.kick.com', 'kick'],
 ];
 
 export function sanitizeEmbedUrl(raw: unknown): Match | null {
@@ -54,8 +68,28 @@ export function sanitizeEmbedUrl(raw: unknown): Match | null {
   const youtube = youtubeId(host, url);
   if (youtube) return { provider: 'youtube', url: `https://www.youtube.com/watch?v=${youtube}` };
 
+  // Chat before player: /embed/<channel>/chat is also under twitch.tv.
+  if ((host === 'twitch.tv' || host === 'player.twitch.tv') && /\/chat\/?$/.test(url.pathname)) {
+    const channel = url.pathname.split('/').filter(Boolean).slice(-2)[0];
+    if (channel && /^[A-Za-z0-9_]{3,26}$/.test(channel)) {
+      return { provider: 'twitch-chat', url: `https://www.twitch.tv/embed/${channel}/chat` };
+    }
+  }
+
   const twitch = twitchChannel(host, url);
   if (twitch) return { provider: 'twitch', url: `https://www.twitch.tv/${twitch}` };
+
+  if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+    const id = /(\d{6,12})/.exec(url.pathname);
+    if (id) return { provider: 'vimeo', url: `https://vimeo.com/${id[1]!}` };
+  }
+
+  if (host === 'kick.com') {
+    const channel = url.pathname.slice(1).split('/')[0];
+    if (channel && /^[A-Za-z0-9_-]{3,26}$/.test(channel)) {
+      return { provider: 'kick', url: `https://player.kick.com/${channel}` };
+    }
+  }
 
   return null;
 }
@@ -96,13 +130,15 @@ function twitchChannel(host: string, url: URL): string | null {
  * unmuted autoplay regardless. Broadcast audio comes from the desktop.
  */
 export function embedSrc(item: EmbedItem): string {
+  const muted = item.muted !== false;
+
   if (item.provider === 'youtube') {
     const id = new URL(item.url).searchParams.get('v') ?? '';
     // nocookie: the overlay has no need to write tracking cookies into a
     // broadcast machine's browser profile.
     const src = new URL(`https://www.youtube-nocookie.com/embed/${id}`);
     src.searchParams.set('autoplay', '1');
-    src.searchParams.set('mute', '1');
+    src.searchParams.set('mute', muted ? '1' : '0');
     src.searchParams.set('playsinline', '1');
     src.searchParams.set('rel', '0');
     return src.toString();
@@ -113,8 +149,40 @@ export function embedSrc(item: EmbedItem): string {
     const src = new URL('https://player.twitch.tv/');
     src.searchParams.set('channel', channel);
     src.searchParams.set('parent', location.hostname);
-    src.searchParams.set('muted', 'true');
+    src.searchParams.set('muted', muted ? 'true' : 'false');
     src.searchParams.set('autoplay', 'true');
+    return src.toString();
+  }
+
+  if (item.provider === 'twitch-chat') {
+    // `/embed/<channel>/chat` — the channel is second from the end, not last.
+    const parts = new URL(item.url).pathname.split('/').filter(Boolean);
+    const channel = parts[parts.length - 2] ?? '';
+    const src = new URL(`https://www.twitch.tv/embed/${channel}/chat`);
+    src.searchParams.set('parent', location.hostname);
+    src.searchParams.set('darkpopout', '');
+    return src.toString();
+  }
+
+  // These two refuse to be framed at their page URL — each has a separate
+  // player endpoint, and pointing at the page produces a blank box.
+  if (item.provider === 'soundcloud') {
+    const src = new URL('https://w.soundcloud.com/player/');
+    src.searchParams.set('url', item.url);
+    src.searchParams.set('auto_play', muted ? 'false' : 'true');
+    return src.toString();
+  }
+
+  if (item.provider === 'spotify') {
+    const path = new URL(item.url).pathname.replace(/^\/embed/, '');
+    return `https://open.spotify.com/embed${path}`;
+  }
+
+  if (item.provider === 'vimeo') {
+    const id = new URL(item.url).pathname.slice(1);
+    const src = new URL(`https://player.vimeo.com/video/${id}`);
+    src.searchParams.set('autoplay', '1');
+    src.searchParams.set('muted', muted ? '1' : '0');
     return src.toString();
   }
 

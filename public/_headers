@@ -26,4 +26,4 @@
   # ever as trustworthy as the code that parsed it, and that code can be
   # stepped over in devtools. This header cannot. Keep the two lists in sync:
   # src/scene/embeds.ts is the readable copy.
-  Content-Security-Policy: frame-src https://*.streamelements.com https://*.streamlabs.com https://www.youtube-nocookie.com https://player.twitch.tv;
+  Content-Security-Policy: frame-src https://*.streamelements.com https://*.streamlabs.com https://toon.at https://*.toon.at https://twip.kr https://*.twip.kr https://ko-fi.com https://*.ko-fi.com https://chzzk.naver.com https://soundcloud.com https://w.soundcloud.com https://open.spotify.com https://player.kick.com https://www.youtube-nocookie.com https://player.twitch.tv https://www.twitch.tv https://player.vimeo.com;
