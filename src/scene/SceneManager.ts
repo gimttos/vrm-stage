@@ -290,6 +290,17 @@ export class SceneManager {
     this.renderAll();
   }
 
+  /**
+   * Persists and broadcasts the current scene.
+   *
+   * `load()` stays silent on purpose — adopting a scene that arrived from the
+   * host must not echo back to it. Applying a preset is the opposite: a local
+   * edit that happens to replace everything at once, so it says so explicitly.
+   */
+  commit(): void {
+    this.emit();
+  }
+
   /** Restores the avatar to the whole frame — the way out of a bad crop. */
   resetCrop(): void {
     const item = this.avatarItem;
@@ -419,6 +430,9 @@ export class SceneManager {
     if (item.kind === 'text') {
       el = document.createElement('div');
       el.className = 'scene-item scene-text';
+    } else if (item.kind === 'shape') {
+      el = document.createElement('div');
+      el.className = 'scene-item scene-shape';
     } else {
       const img = document.createElement('img');
       img.className = 'scene-item scene-image';
@@ -604,6 +618,14 @@ export class SceneManager {
       return;
     }
 
+    if (item.kind === 'shape') {
+      el.style.width = `${item.w}%`;
+      el.style.height = `${item.h}%`;
+      el.style.background = item.color;
+      el.style.borderRadius = `${item.radius}%`;
+      return;
+    }
+
     if (item.kind === 'text') {
       // textContent, never innerHTML: scene JSON arrives from URLs and files.
       el.textContent = item.text;
@@ -726,6 +748,15 @@ export function sanitizeScene(raw: unknown): SceneSpec | null {
         bold: it['bold'] === true,
         shadow: it['shadow'] !== false,
       });
+    } else if (it['kind'] === 'shape') {
+      items.push({
+        ...base,
+        kind: 'shape',
+        w: Math.min(100, Math.max(1, asNumber(it['w'], 30))),
+        h: Math.min(100, Math.max(1, asNumber(it['h'], 20))),
+        color: sanitizeColor(it['color']) ?? '#ffffff',
+        radius: Math.min(50, Math.max(0, asNumber(it['radius'], 0))),
+      });
     } else if (it['kind'] === 'image') {
       const url = sanitizeUrl(it['url']);
       if (url) {
@@ -796,6 +827,13 @@ export function compact(spec: SceneSpec): unknown {
     } else if (item.kind === 'image') {
       out['url'] = item.url;
       if (item.width !== 20) out['width'] = round(item.width);
+    } else if (item.kind === 'shape') {
+      // Defaults here mirror the sanitizer's, which is what makes stripping
+      // them lossless.
+      if (item.w !== 30) out['w'] = round(item.w);
+      if (item.h !== 20) out['h'] = round(item.h);
+      if (item.color !== '#ffffff') out['color'] = item.color;
+      if (item.radius !== 0) out['radius'] = round(item.radius);
     } else {
       if (item.w !== 100) out['w'] = round(item.w);
       if (item.h !== 100) out['h'] = round(item.h);

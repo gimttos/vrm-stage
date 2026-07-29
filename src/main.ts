@@ -24,6 +24,7 @@ import {
 import { getModel, putModel } from './storage/modelStore';
 import { EMOTIONS, Panel } from './ui/panel';
 import { SceneManager } from './scene/SceneManager';
+import { findPreset } from './scene/presets';
 import type { PoseFrame } from './types';
 
 /** Key the current model is cached under so an OBS URL can point at it. */
@@ -153,6 +154,17 @@ const panel = new Panel(
       // The pose detector is created at start(), so enabling it mid-session has
       // to restart the source rather than quietly do nothing.
       if (wantsBody && sourceKind === 'webcam' && trackingWanted) void restartTracking();
+    },
+    onApplyPreset: (id) => {
+      const preset = findPreset(id);
+      if (!preset) return;
+      // Through `load` + an explicit emit rather than piecemeal edits: a preset
+      // replaces the whole document, and one emit means one broadcast and one
+      // storage write instead of a dozen.
+      sceneManager.load(preset.build());
+      sceneManager.commit();
+      syncAvatar();
+      panel.setNotice(`'${preset.name}' 프리셋을 적용했습니다.`);
     },
     onCropModeChange: (on) => {
       sceneManager.setCropMode(on);

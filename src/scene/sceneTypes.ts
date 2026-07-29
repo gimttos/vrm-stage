@@ -88,10 +88,29 @@ export interface AvatarItem extends Omit<SceneItemBase, 'band'> {
   plate: string | null;
 }
 
-export type SceneItem = TextItem | ImageItem | AvatarItem;
+/**
+ * A flat coloured rectangle.
+ *
+ * The presets need panels, capture placeholders and name plates, and the rule
+ * for presets is ZERO binary assets — a preset that pulls a background from a
+ * CDN is the MediaPipe dependency wearing a different hat, and it blows the URL
+ * budget besides. A rectangle is the smallest thing that makes those layouts
+ * expressible in colour and geometry alone.
+ *
+ * Deliberately not a general shape: no borders, no gradients, no rotation. Each
+ * of those is a preference with no obvious stopping point.
+ */
+export interface ShapeItem extends RectItemBase {
+  kind: 'shape';
+  color: string;
+  /** Corner radius, percent of the shorter side. */
+  radius: number;
+}
 
-export function isRect(item: SceneItem): item is AvatarItem {
-  return item.kind === 'avatar';
+export type SceneItem = TextItem | ImageItem | AvatarItem | ShapeItem;
+
+export function isRect(item: SceneItem): item is AvatarItem | ShapeItem {
+  return item.kind === 'avatar' || item.kind === 'shape';
 }
 
 export function isAvatar(item: SceneItem): item is AvatarItem {

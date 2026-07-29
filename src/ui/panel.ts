@@ -5,7 +5,8 @@ import type { BodyRigConfig } from '../driver/bodyRig';
 import type { HandRigConfig } from '../driver/handRig';
 import type { AppMode } from '../mode';
 import type { SceneManager } from '../scene/SceneManager';
-import type { SceneItem } from '../scene/sceneTypes';
+import type { SceneItem, SceneSpec } from '../scene/sceneTypes';
+import { PRESETS } from '../scene/presets';
 import type { Framing } from '../stage/Stage';
 
 /**
@@ -44,6 +45,7 @@ export interface PanelCallbacks {
   onBodyConfigChange(patch: Partial<BodyRigConfig>): void;
   onResetView(): void;
   onCropModeChange(on: boolean): void;
+  onApplyPreset(id: string): void;
   onEmotion(name: string): void;
   onCopySceneLink(): void;
   onTrackInThisWindowChange(enabled: boolean): void;
@@ -440,6 +442,31 @@ export class Panel {
     ]);
   }
 
+  /**
+   * Preset buttons, each showing a diagram of the layout it applies.
+   *
+   * The thumbnail is drawn FROM THE SPEC — every rect item becomes a rect in an
+   * SVG with the same x/y/w/h. So it cannot drift from what applying actually
+   * does, and adding a preset never means drawing a picture. A real mini render
+   * would need a second WebGL context per tile to show the one thing the diagram
+   * already conveys: where the avatar sits.
+   */
+  private presetGrid(): HTMLElement {
+    const grid = el('div', 'presets');
+    for (const preset of PRESETS) {
+      const tile = document.createElement('button');
+      tile.className = 'preset';
+      tile.title = preset.note;
+      tile.append(
+        presetThumbnail(preset.build()),
+        el('span', 'preset-name', [preset.name]),
+      );
+      tile.addEventListener('click', () => this.callbacks.onApplyPreset(preset.id));
+      grid.append(tile);
+    }
+    return grid;
+  }
+
   private sceneTab(): HTMLElement {
     this.bgColorInput = document.createElement('input');
     this.bgColorInput.type = 'color';
@@ -450,6 +477,10 @@ export class Panel {
     this.bgColorInput.style.display = 'none';
 
     return el('div', '', [
+      el('h2', '', ['프리셋']),
+      this.presetGrid(),
+      el('p', 'hint', ['적용하면 지금 씬을 덮어씁니다. 배경·오버레이·아바타 위치가 모두 바뀝니다.']),
+      el('h2', '', ['직접 꾸미기']),
       row([
         label('배경'),
         select(
@@ -977,4 +1008,54 @@ function format(value: number, isDegrees: boolean): string {
 
 function deg(radians: number): string {
   return `${((radians * 180) / Math.PI).toFixed(1)}°`;
+}
+
+/**
+ * Draws a scene as a small diagram: one rect per positioned item.
+ *
+ * Built from the spec, so it is always what applying the preset produces. The
+ * avatar gets the accent colour and a label because it is the one thing the
+ * operator is really placing; text becomes a bar at its own size, which is
+ * enough to read the layout at 92x52.
+ */
+function presetThumbnail(spec: SceneSpec): SVGSVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 100;
+  const H = 56;
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('class', 'preset-thumb');
+
+  const rect = (x: number, y: number, w: number, h: number, fill: string, r = 1) => {
+    const node = document.createElementNS(NS, 'rect');
+    node.setAttribute('x', String(((x - w / 2) / 100) * W));
+    node.setAttribute('y', String(((y - h / 2) / 100) * H));
+    node.setAttribute('width', String((w / 100) * W));
+    node.setAttribute('height', String((h / 100) * H));
+    node.setAttribute('rx', String(r));
+    node.setAttribute('fill', fill);
+    svg.append(node);
+  };
+
+  // The frame itself: a transparent background is drawn as the checkerboard grey
+  // so "composites over your game" is visible rather than implied.
+  rect(50, 50, 100, 100, spec.background.type === 'color' ? spec.background.color : '#2a2438', 2);
+
+  for (const item of spec.items) {
+    if (item.hidden) continue;
+    if (item.kind === 'shape') rect(item.x, item.y, item.w, item.h, item.color, 1.5);
+    else if (item.kind === 'text') {
+      // A text run has no height in the spec; approximate one from its size so
+      // the bar reads as a title rather than a hairline.
+      const h = Math.max(4, (item.size / 1080) * 100 * 1.3);
+      rect(item.x, item.y, Math.min(70, item.text.length * item.size * 0.055), h, item.color, 1);
+    }
+  }
+
+  const avatarItem = spec.items.find((item) => item.kind === 'avatar');
+  if (avatarItem && avatarItem.kind === 'avatar') {
+    if (avatarItem.plate) rect(avatarItem.x, avatarItem.y, avatarItem.w, avatarItem.h, avatarItem.plate, 2);
+    rect(avatarItem.x, avatarItem.y, avatarItem.w, avatarItem.h, 'rgba(167,139,250,0.55)', 2);
+  }
+  return svg;
 }

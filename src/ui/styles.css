@@ -78,6 +78,12 @@ body.obs #ui {
   max-width: 96%;
 }
 
+/* Panels and placeholders. `max-width` from .scene-item would cap a full-width
+   panel at 96%, so shapes opt out — their size is the point. */
+.scene-shape {
+  max-width: none;
+}
+
 .scene-text {
   white-space: pre-wrap;
   text-align: center;
@@ -348,6 +354,42 @@ button.primary:hover {
 
 button.wide {
   width: 100%;
+}
+
+/* ---------- scene presets ---------- */
+
+.presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+button.preset {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  text-align: left;
+  line-height: 1.2;
+}
+
+.preset-thumb {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 3px;
+  /* The frame's own edge, so a transparent preset still reads as a frame. */
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+}
+
+.preset-name {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+button.preset:hover .preset-name {
+  color: var(--ink);
 }
 
 .inspector:not(:empty) {
